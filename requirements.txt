@@ -1,0 +1,20 @@
+# Core
+psycopg2-binary==2.9.9
+SQLAlchemy==2.0.30
+
+# Scheduling (replaces Celery + Redis)
+APScheduler==3.10.4
+
+# Market data
+yfinance==0.2.40
+requests==2.31.0
+
+# News / NLP
+feedparser==6.0.11
+spacy==3.7.4
+
+# Utils
+python-dotenv==1.0.1
+tenacity==8.2.3
+structlog==24.1.0
+pytz==2024.1
