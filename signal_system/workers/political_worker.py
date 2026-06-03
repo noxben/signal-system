@@ -2,23 +2,20 @@
 """
 political_worker — runs every 6 hours.
 
-Polls Quiver Quantitative free tier for:
-  - Congressional trades
-  - Government contracts
-  - Lobbying activity
+Replaces Quiver Quantitative (no longer free) with two genuinely
+free, no-key-required public APIs:
 
-Writes raw events to political_events table.
-Updates source_health on every run.
+  1. SEC EDGAR Form 4 — insider trades (filed by corporate insiders)
+  2. USASpending.gov  — federal contract awards by company
 
-§4.2: Congressional trade disclosure lag is up to 45 days.
-Use for sector bias and trend — NOT entry timing.
-
-§5.1: 3 retries with exponential backoff.
+§4.2 intent preserved: use for sector bias and trend, NOT entry timing.
+Disclosure lag still applies — Form 4 must be filed within 2 business
+days of trade; contract awards may post days after signing.
 """
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -31,101 +28,159 @@ from ..config.watchlist import ALL_TICKERS, TICKER_SECTOR
 
 logger = logging.getLogger(__name__)
 
-SOURCE = "political"
-
-QUIVER_BASE = "https://api.quiverquant.com/beta"
-QUIVER_API_KEY = os.getenv("QUIVER_API_KEY", "")
-
-# Endpoints available on Quiver free tier
-ENDPOINTS: dict[str, str] = {
-    "congress":  "/live/congresstrading",
-    "contracts": "/live/govcontracts",
-    "lobbying":  "/live/lobbying",
-}
-
+SOURCE    = "political"
 TICKER_SET = set(ALL_TICKERS)
 
-
-def _headers() -> dict:
-    return {
-        "Accept": "application/json",
-        "Authorization": f"Token {QUIVER_API_KEY}",
-    }
+HEADERS = {"User-Agent": "signal-system research@example.com"}  # SEC requires User-Agent
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=16),
-    reraise=True,
-)
-def _fetch_endpoint(event_type: str, path: str) -> list[dict]:
+# ----------------------------------------------------------------
+# SEC EDGAR — Form 4 insider filings
+# Free, no key. Rate limit: 10 req/sec — we stay well under that.
+# ----------------------------------------------------------------
+
+EDGAR_SEARCH = "https://efts.sec.gov/LATEST/search-index"
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=16), reraise=True)
+def _fetch_edgar_form4() -> list[dict]:
     """
-    Fetch one Quiver endpoint. Returns list of normalised event dicts.
-    Only keeps rows where ticker is on our watchlist.
+    Fetch recent Form 4 filings for watchlist tickers.
+    Queries EDGAR full-text search — filters to filings mentioning
+    our tickers in the last 2 days.
     """
-    url = f"{QUIVER_BASE}{path}"
-    resp = requests.get(url, headers=_headers(), timeout=15)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d")
+    items  = []
+    now    = datetime.now(timezone.utc)
 
-    if resp.status_code == 401:
-        raise ValueError("Quiver API key invalid or missing — check QUIVER_API_KEY in .env")
-    if resp.status_code == 429:
-        raise ValueError("Quiver rate limit hit — free tier allows limited calls")
+    # Batch by ticker — EDGAR search handles one query at a time
+    for ticker in ALL_TICKERS:
+        try:
+            resp = requests.get(
+                EDGAR_SEARCH,
+                params={
+                    "q":          f'"{ticker}"',
+                    "dateRange":  "custom",
+                    "startdt":    cutoff,
+                    "forms":      "4",
+                    "_source":    "file_date,display_names,period_of_report",
+                    "hits.hits.total.value": 1,
+                },
+                headers=HEADERS,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            hits = data.get("hits", {}).get("hits", [])
 
-    resp.raise_for_status()
+            for hit in hits:
+                src = hit.get("_source", {})
+                items.append({
+                    "ticker":        ticker,
+                    "sector":        TICKER_SECTOR.get(ticker),
+                    "event_type":    "insider_trade",
+                    "size_value":    None,           # Form 4 amount needs deeper parse
+                    "reported_date": src.get("period_of_report"),
+                    "raw_json":      src,
+                    "ingested_at":   now,
+                })
 
-    raw   = resp.json()
-    now   = datetime.now(timezone.utc)
-    items = []
-
-    for row in raw:
-        ticker = (row.get("Ticker") or row.get("ticker") or "").upper().strip()
-
-        # Only care about watchlist tickers
-        if ticker not in TICKER_SET:
+        except Exception as e:
+            logger.warning("edgar ticker=%s error: %s", ticker, e)
             continue
 
-        # Normalise size value — field name varies by endpoint
-        size_value = (
-            row.get("Amount")
-            or row.get("Amount_Low")
-            or row.get("ContractAmount")
-            or row.get("amount")
-            or None
-        )
-        if size_value:
-            try:
-                size_value = float(str(size_value).replace(",", "").replace("$", ""))
-            except (ValueError, TypeError):
-                size_value = None
-
-        # Reported/filed date — used for disclosure lag awareness
-        reported_date = (
-            row.get("TransactionDate")
-            or row.get("Date")
-            or row.get("ReportDate")
-            or None
-        )
-
-        items.append({
-            "ticker":        ticker,
-            "sector":        TICKER_SECTOR.get(ticker),
-            "event_type":    event_type,      # 'congress' | 'contracts' | 'lobbying'
-            "size_value":    size_value,
-            "reported_date": reported_date,
-            "raw_json":      row,             # keep full row for debugging
-            "ingested_at":   now,
-        })
-
-    logger.info("quiver endpoint=%s returned %d watchlist events", event_type, len(items))
+    logger.info("edgar form4 returned %d filings", len(items))
     return items
 
+
+# ----------------------------------------------------------------
+# USASpending.gov — federal contract awards
+# Free, no key required.
+# ----------------------------------------------------------------
+
+USASPENDING_URL = "https://api.usaspending.gov/api/v2/search/spending_by_award/"
+
+# Map our watchlist companies to their DUNS/name fragments
+# Only defense + industrials are likely to appear in gov contracts
+CONTRACT_SEARCH_TERMS: dict[str, str] = {
+    "LMT":  "Lockheed Martin",
+    "RTX":  "Raytheon",
+    "NOC":  "Northrop Grumman",
+    "GD":   "General Dynamics",
+    "LHX":  "L3Harris",
+    "BA":   "Boeing",
+    "GE":   "GE Aerospace",
+    "CAT":  "Caterpillar",
+    "XOM":  "ExxonMobil",
+    "CVX":  "Chevron",
+}
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=16), reraise=True)
+def _fetch_usaspending() -> list[dict]:
+    """
+    Fetch recent federal contract awards for watchlist companies.
+    Looks back 7 days — contracts post with a delay.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    today  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now    = datetime.now(timezone.utc)
+    items  = []
+
+    for ticker, company_name in CONTRACT_SEARCH_TERMS.items():
+        try:
+            payload = {
+                "filters": {
+                    "award_type_codes": ["A", "B", "C", "D"],  # contracts only
+                    "time_period": [{"start_date": cutoff, "end_date": today}],
+                    "keyword": company_name,
+                },
+                "fields": ["Award ID", "Recipient Name", "Award Amount", "Award Date"],
+                "limit": 5,
+                "page":  1,
+            }
+
+            resp = requests.post(
+                USASPENDING_URL,
+                json=payload,
+                headers={**HEADERS, "Content-Type": "application/json"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+
+            for award in results:
+                amount = award.get("Award Amount")
+                try:
+                    amount = float(amount) if amount else None
+                except (ValueError, TypeError):
+                    amount = None
+
+                items.append({
+                    "ticker":        ticker,
+                    "sector":        TICKER_SECTOR.get(ticker),
+                    "event_type":    "gov_contract",
+                    "size_value":    amount,
+                    "reported_date": award.get("Award Date"),
+                    "raw_json":      award,
+                    "ingested_at":   now,
+                })
+
+        except Exception as e:
+            logger.warning("usaspending ticker=%s error: %s", ticker, e)
+            continue
+
+    logger.info("usaspending returned %d contract awards", len(items))
+    return items
+
+
+# ----------------------------------------------------------------
+# DB write
+# ----------------------------------------------------------------
 
 def _write_to_db(items: list[dict]) -> None:
     if not items:
         return
 
     import json
-
     with get_db() as db:
         for item in items:
             db.execute(
@@ -137,37 +192,31 @@ def _write_to_db(items: list[dict]) -> None:
                         (:ticker, :sector, :event_type, :size_value,
                          :reported_date, :raw_json, :ingested_at)
                 """),
-                {
-                    **item,
-                    "raw_json": json.dumps(item["raw_json"]),
-                },
+                {**item, "raw_json": json.dumps(item["raw_json"])},
             )
-
     logger.info("political_worker wrote %d events", len(items))
 
 
+# ----------------------------------------------------------------
+# Entry point
+# ----------------------------------------------------------------
+
 def run() -> None:
     """
-    Entry point called by scheduler every 6 hours.
-    Each endpoint is fetched independently — partial success is still useful.
-    §4.2: data used for sector bias only, not entry timing.
+    Runs every 6 hours. Each source fetched independently —
+    one failing does not block the other.
     """
-    if not QUIVER_API_KEY:
-        logger.warning("QUIVER_API_KEY not set — political_worker skipped")
-        mark_failure(SOURCE, "QUIVER_API_KEY not configured")
-        return
-
     logger.info("political_worker starting run")
     all_items = []
     errors    = []
 
-    for event_type, path in ENDPOINTS.items():
+    for label, fetch_fn in [("edgar", _fetch_edgar_form4), ("usaspending", _fetch_usaspending)]:
         try:
-            items = _fetch_endpoint(event_type, path)
+            items = fetch_fn()
             all_items.extend(items)
         except Exception as e:
-            logger.error("quiver endpoint=%s failed: %s", event_type, e)
-            errors.append(f"{event_type}: {e}")
+            logger.error("political source=%s failed: %s", label, e)
+            errors.append(f"{label}: {e}")
 
     if all_items:
         try:

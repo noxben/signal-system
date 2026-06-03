@@ -1,7 +1,17 @@
 version: "3.9"
 
+# ---------------------------------------------------------------
+# Local development only.
+# In production (Railway): only the app service runs.
+# Supabase provides Postgres — no local DB container needed.
+# ---------------------------------------------------------------
+
 services:
 
+  # Local Postgres — mirrors Supabase schema for offline dev.
+  # To use Supabase instead: set DB_* vars in .env to Supabase
+  # connection string and comment out this service + the
+  # depends_on block in app below.
   postgres:
     image: postgres:16-alpine
     environment:
@@ -15,6 +25,7 @@ services:
       - ./sql/001_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
       - ./sql/002_market_data.sql:/docker-entrypoint-initdb.d/02_market_data.sql
       - ./sql/003_news_items.sql:/docker-entrypoint-initdb.d/03_news_items.sql
+      - ./sql/004_political_events.sql:/docker-entrypoint-initdb.d/04_political_events.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U signals_user -d signals_db"]
       interval: 5s
