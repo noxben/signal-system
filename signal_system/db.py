@@ -26,6 +26,7 @@ engine = create_engine(
     max_overflow=10,
     pool_pre_ping=True,   # drops stale connections before use
     echo=False,
+    connect_args={"sslmode": os.getenv("DB_SSL_MODE", "prefer")},
 )
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)

@@ -2,8 +2,8 @@
 """
 Task functions called by the scheduler.
 Plain Python — no Celery, no decorators.
-All logic lives in the worker modules; these are thin wrappers with
-the market-hours guard applied where needed.
+All logic lives in the worker/engine modules; these are thin
+wrappers with the market-hours guard applied where needed.
 """
 
 import logging
@@ -43,7 +43,8 @@ def run_news_worker():
 
 
 def run_political_worker():
-    from .workers.political_worker import run  # stub — Week 2
+    # Runs every 6h regardless of market hours — contracts/filings post anytime
+    from .workers.political_worker import run
     run()
 
 
@@ -51,8 +52,10 @@ def run_signal_engine():
     if not _is_market_hours():
         logger.debug("signal_engine skipped — outside market hours")
         return
-    logger.info("signal_engine stub — Week 3")
+    from .engine.signal_engine import run
+    run()
 
 
 def run_outcome_worker():
-    logger.info("outcome_worker stub — Week 4")
+    from .workers.outcome_worker import run
+    run()

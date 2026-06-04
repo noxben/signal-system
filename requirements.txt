@@ -18,3 +18,7 @@ python-dotenv==1.0.1
 tenacity==8.2.3
 structlog==24.1.0
 pytz==2024.1
+
+# Dashboard
+flask==3.0.3
+flask-cors==4.0.1

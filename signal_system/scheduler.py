@@ -1,16 +1,15 @@
 # signal_system/scheduler.py
 """
-APScheduler setup — replaces Celery + Redis entirely.
-Runs in-process; no broker, no extra services.
+Entry point — runs the APScheduler and Flask dashboard in the same process.
+Flask runs in a background thread; APScheduler runs on the main thread.
 
-Start the scheduler:
+Start:
     python -m signal_system.scheduler
-
-Or import and call start() from a FastAPI lifespan / main entry point.
 """
 
 import logging
 import os
+import threading
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -28,21 +27,27 @@ from .tasks import (
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 5000))
+
+
+def _start_dashboard():
+    """Run Flask in a daemon thread — exits when main process exits."""
+    from .dashboard.app import create_app
+    app = create_app()
+    app.run(host="0.0.0.0", port=DASHBOARD_PORT, debug=False, use_reloader=False)
+
 
 def build_scheduler() -> BlockingScheduler:
     scheduler = BlockingScheduler(timezone="America/New_York")
 
-    # market data — every 5 min
     scheduler.add_job(
         run_market_worker,
         trigger=IntervalTrigger(seconds=300),
         id="market_worker",
         name="Market data (yfinance)",
-        max_instances=1,        # never overlap
-        misfire_grace_time=60,  # if delayed up to 60s, still run
+        max_instances=1,
+        misfire_grace_time=60,
     )
-
-    # news — every 15 min
     scheduler.add_job(
         run_news_worker,
         trigger=IntervalTrigger(seconds=900),
@@ -51,18 +56,14 @@ def build_scheduler() -> BlockingScheduler:
         max_instances=1,
         misfire_grace_time=120,
     )
-
-    # political / Quiver — every 6 hours
     scheduler.add_job(
         run_political_worker,
         trigger=IntervalTrigger(seconds=21600),
         id="political_worker",
-        name="Quiver Quantitative",
+        name="Political (EDGAR + USASpending)",
         max_instances=1,
         misfire_grace_time=300,
     )
-
-    # signal engine — every 5 min
     scheduler.add_job(
         run_signal_engine,
         trigger=IntervalTrigger(seconds=300),
@@ -71,8 +72,6 @@ def build_scheduler() -> BlockingScheduler:
         max_instances=1,
         misfire_grace_time=60,
     )
-
-    # outcome worker — daily at 17:00 ET
     scheduler.add_job(
         run_outcome_worker,
         trigger=CronTrigger(hour=17, minute=0),
@@ -89,6 +88,13 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
+
+    # Start dashboard in background thread
+    dash_thread = threading.Thread(target=_start_dashboard, daemon=True)
+    dash_thread.start()
+    logger.info("Dashboard running on http://0.0.0.0:%d", DASHBOARD_PORT)
+
+    # Start scheduler on main thread (blocking)
     logger.info("Starting scheduler")
     scheduler = build_scheduler()
     try:

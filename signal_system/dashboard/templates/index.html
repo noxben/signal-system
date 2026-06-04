@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Signal System</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --border:    #2a2d3a;
+      --text:      #e2e6f0;
+      --muted:     #6b7280;
+      --green:     #22c55e;
+      --amber:     #f59e0b;
+      --red:       #ef4444;
+      --blue:      #3b82f6;
+      --purple:    #8b5cf6;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    /* ── Health banner ── */
+    #health-banner {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+
+    #health-banner h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: .5px;
+      margin-right: auto;
+    }
+
+    .source-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .dot.healthy  { background: var(--green); }
+    .dot.degraded { background: var(--red); animation: pulse 1.5s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: .3; }
+    }
+
+    #last-refresh {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* ── Layout ── */
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .section-header h2 { font-size: 16px; font-weight: 600; }
+    .count-badge {
+      background: var(--border);
+      border-radius: 10px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* ── Signal cards ── */
+    #signal-queue { display: flex; flex-direction: column; gap: 12px; }
+
+    .signal-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+    }
+
+    .signal-card.partial { border-left: 3px solid var(--amber); }
+
+    .card-top {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .ticker {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: .5px;
+    }
+
+    .sector-tag {
+      background: var(--border);
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    .score-badge {
+      margin-left: auto;
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--green);
+    }
+
+    .score-badge.low  { color: var(--amber); }
+    .score-badge.high { color: var(--blue); }
+
+    .trigger-tag {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .trigger-tag.pre_news    { border-color: var(--purple); color: var(--purple); }
+    .trigger-tag.sector_align { border-color: var(--blue);   color: var(--blue); }
+    .trigger-tag.repeat      { border-color: var(--amber);  color: var(--amber); }
+
+    /* ── Factor pills ── */
+    .factors {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+
+    .factor {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: var(--border);
+      color: var(--muted);
+    }
+    .factor.on  { background: #14532d44; color: var(--green); border: 1px solid #14532d; }
+    .factor.off { background: #7f1d1d33; color: #f87171;      border: 1px solid #7f1d1d; }
+
+    .data-warning {
+      font-size: 11px;
+      color: var(--amber);
+      margin-bottom: 10px;
+    }
+
+    .timestamp { font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+
+    /* ── Actions ── */
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn {
+      padding: 7px 18px;
+      border-radius: 6px;
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+    .btn:hover    { opacity: .85; }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    .btn-approve { background: var(--green); color: #000; }
+    .btn-reject  { background: var(--border); color: var(--text); }
+
+    select.reject-reason {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+
+    /* ── Empty / loading states ── */
+    .empty-state {
+      text-align: center;
+      color: var(--muted);
+      padding: 60px 0;
+      font-size: 13px;
+    }
+
+    /* ── Decided table ── */
+    #decided-section { margin-top: 40px; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th {
+      text-align: left;
+      color: var(--muted);
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 500;
+    }
+
+    td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .outcome-hit  { color: var(--green); font-weight: 600; }
+    .outcome-mfe  { color: var(--blue);  font-weight: 600; }
+    .outcome-fail { color: var(--red);   font-weight: 600; }
+    .outcome-null { color: var(--muted); }
+  </style>
+</head>
+<body>
+
+<!-- §10.3 Health banner -->
+<header id="health-banner">
+  <h1>⚡ Signal System</h1>
+  <div class="source-badge">
+    <div class="dot" id="dot-market"></div>
+    <span>Market</span>
+  </div>
+  <div class="source-badge">
+    <div class="dot" id="dot-news"></div>
+    <span>News</span>
+  </div>
+  <div class="source-badge">
+    <div class="dot" id="dot-political"></div>
+    <span>Political</span>
+  </div>
+  <span id="last-refresh"></span>
+</header>
+
+<main>
+  <!-- Signal queue §10.1 -->
+  <div class="section-header">
+    <h2>Signal Queue</h2>
+    <span class="count-badge" id="queue-count">—</span>
+  </div>
+
+  <div id="signal-queue">
+    <div class="empty-state">Loading signals…</div>
+  </div>
+
+  <!-- Decided signals -->
+  <div id="decided-section">
+    <div class="section-header" style="margin-top:40px;">
+      <h2>Recent Decisions</h2>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Sector</th>
+          <th>Score</th>
+          <th>Trigger</th>
+          <th>Decision</th>
+          <th>Reason</th>
+          <th>Outcome</th>
+          <th>Time</th>
+        </tr>
+      </thead>
+      <tbody id="decided-body">
+        <tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const API = "";  // same origin
+
+// ── Helpers ─────────────────────────────────────────────────
+
+function fmt(isoStr) {
+  if (!isoStr) return "—";
+  const d = new Date(isoStr);
+  return d.toLocaleString("en-US", {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", hour12: false
+  });
+}
+
+function scoreColor(score) {
+  if (score >= 7) return "high";
+  if (score >= 5) return "";
+  return "low";
+}
+
+// ── Health banner ────────────────────────────────────────────
+
+async function refreshHealth() {
+  try {
+    const res  = await fetch(`${API}/api/health`);
+    const data = await res.json();
+    ["market", "news", "political"].forEach(src => {
+      const dot = document.getElementById(`dot-${src}`);
+      if (dot) {
+        dot.className = "dot " + (data[src] === "healthy" ? "healthy" : "degraded");
+        dot.title     = data[src];
+      }
+    });
+    document.getElementById("last-refresh").textContent =
+      "updated " + new Date().toLocaleTimeString("en-US", {hour12: false});
+  } catch(e) {
+    console.warn("health fetch failed", e);
+  }
+}
+
+// ── Signal queue ─────────────────────────────────────────────
+
+function buildFactorPills(factors) {
+  const show = [
+    ["volume_spike",   "Vol spike"],
+    ["sector_aligned", "Sector align"],
+    ["no_recent_news", "No news 4h"],
+    ["repeat_spike",   "Repeat spike"],
+    ["options_proxy",  "Options proxy"],
+    ["earnings_soon",  "Earnings ⚠"],
+    ["late_entry",     "Late entry"],
+    ["small_cap",      "Small cap"],
+  ];
+  return show.map(([key, label]) => {
+    const val = factors[key];
+    if (val === undefined) return "";
+    // Penalties shown as "off" (bad), positives as "on" (good)
+    const isPenalty = ["earnings_soon","late_entry","small_cap"].includes(key);
+    const cls = val ? (isPenalty ? "off" : "on") : "";
+    return `<span class="factor ${cls}">${label}</span>`;
+  }).join("");
+}
+
+function buildCard(signal) {
+  const partial  = signal.data_quality === "partial";
+  const factors  = signal.factors_json || {};
+  const volRatio = factors.volume_ratio ? `${factors.volume_ratio}×` : "";
+
+  return `
+  <div class="signal-card ${partial ? "partial" : ""}" id="card-${signal.signal_id}">
+    <div class="card-top">
+      <span class="ticker">${signal.ticker}</span>
+      <span class="sector-tag">${signal.sector || "—"}</span>
+      <span class="trigger-tag ${signal.trigger_type}">${signal.trigger_type.replace("_"," ")}</span>
+      ${volRatio ? `<span class="factor on">${volRatio} vol</span>` : ""}
+      <span class="score-badge ${scoreColor(signal.score)}">${signal.score}</span>
+    </div>
+
+    <div class="factors">${buildFactorPills(factors)}</div>
+
+    ${partial ? `<div class="data-warning">⚠ Partial data — one or more sources degraded at signal time</div>` : ""}
+
+    <div class="timestamp">${fmt(signal.created_at)}</div>
+
+    <div class="card-actions">
+      <button class="btn btn-approve" onclick="approve('${signal.signal_id}', this)">
+        Approve
+      </button>
+      <select class="reject-reason" id="reason-${signal.signal_id}">
+        <option value="">Select reason…</option>
+        <option value="already_moved">Already moved</option>
+        <option value="earnings_risk">Earnings risk</option>
+        <option value="low_conviction">Low conviction</option>
+        <option value="sector_noise">Sector noise</option>
+        <option value="other">Other</option>
+      </select>
+      <button class="btn btn-reject" onclick="reject('${signal.signal_id}', this)">
+        Reject
+      </button>
+    </div>
+  </div>`;
+}
+
+async function refreshQueue() {
+  try {
+    const res     = await fetch(`${API}/api/signals`);
+    const signals = await res.json();
+    const queue   = document.getElementById("signal-queue");
+    const badge   = document.getElementById("queue-count");
+
+    badge.textContent = signals.length;
+
+    if (!signals.length) {
+      queue.innerHTML = `<div class="empty-state">No pending signals — system is running</div>`;
+      return;
+    }
+
+    queue.innerHTML = signals.map(buildCard).join("");
+  } catch(e) {
+    console.warn("queue fetch failed", e);
+  }
+}
+
+// ── Actions ──────────────────────────────────────────────────
+
+async function approve(signalId, btn) {
+  btn.disabled = true;
+  btn.textContent = "Approving…";
+  try {
+    const res  = await fetch(`${API}/api/signals/${signalId}/approve`, { method: "POST" });
+    const data = await res.json();
+    if (res.ok) {
+      document.getElementById(`card-${signalId}`).remove();
+      document.getElementById("queue-count").textContent =
+        parseInt(document.getElementById("queue-count").textContent) - 1;
+      refreshDecided();
+    } else {
+      alert("Error: " + (data.error || res.statusText));
+      btn.disabled = false;
+      btn.textContent = "Approve";
+    }
+  } catch(e) {
+    alert("Network error");
+    btn.disabled = false;
+    btn.textContent = "Approve";
+  }
+}
+
+async function reject(signalId, btn) {
+  const reasonEl = document.getElementById(`reason-${signalId}`);
+  const reason   = reasonEl.value;
+  if (!reason) { alert("Select a reject reason first."); return; }
+
+  btn.disabled = true;
+  btn.textContent = "Rejecting…";
+  try {
+    const res  = await fetch(`${API}/api/signals/${signalId}/reject`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      document.getElementById(`card-${signalId}`).remove();
+      document.getElementById("queue-count").textContent =
+        parseInt(document.getElementById("queue-count").textContent) - 1;
+      refreshDecided();
+    } else {
+      alert("Error: " + (data.error || res.statusText));
+      btn.disabled = false;
+      btn.textContent = "Reject";
+    }
+  } catch(e) {
+    alert("Network error");
+    btn.disabled = false;
+    btn.textContent = "Reject";
+  }
+}
+
+// ── Decided table ─────────────────────────────────────────────
+
+function outcomeCell(label) {
+  if (!label) return `<span class="outcome-null">pending</span>`;
+  const cls = { hit: "outcome-hit", mfe: "outcome-mfe", fail: "outcome-fail" }[label] || "";
+  return `<span class="${cls}">${label.toUpperCase()}</span>`;
+}
+
+async function refreshDecided() {
+  try {
+    const res  = await fetch(`${API}/api/signals/decided`);
+    const rows = await res.json();
+    const body = document.getElementById("decided-body");
+
+    if (!rows.length) {
+      body.innerHTML = `<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No decisions yet</td></tr>`;
+      return;
+    }
+
+    body.innerHTML = rows.map(r => `
+      <tr>
+        <td><strong>${r.ticker}</strong></td>
+        <td>${r.sector || "—"}</td>
+        <td>${r.score}</td>
+        <td>${(r.trigger_type||"").replace("_"," ")}</td>
+        <td>${r.approved ? "✅ Approved" : "❌ Rejected"}</td>
+        <td>${r.reject_reason || "—"}</td>
+        <td>${outcomeCell(r.outcome_label)}</td>
+        <td>${fmt(r.approval_timestamp)}</td>
+      </tr>
+    `).join("");
+  } catch(e) {
+    console.warn("decided fetch failed", e);
+  }
+}
+
+// ── Init & polling ────────────────────────────────────────────
+
+refreshHealth();
+refreshQueue();
+refreshDecided();
+
+// Poll every 30s — fast enough for 5-min signal cadence
+setInterval(refreshHealth, 30_000);
+setInterval(refreshQueue,  30_000);
+setInterval(refreshDecided, 60_000);
+</script>
+</body>
+</html>
