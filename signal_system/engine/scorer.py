@@ -180,3 +180,53 @@ def compute(
     factors["final_score"]    = score
 
     return score, factors
+
+
+# -- Public interface for testing --
+def compute_score(factors: dict, source_statuses: dict) -> tuple[int, dict]:
+    """
+    Testable interface: takes pre-built factors dict + source statuses.
+    Returns (score, breakdown_dict).
+    """
+    score = 0
+    breakdown = dict(factors)  # copy all factor values into breakdown
+
+    # Positive factors — zero out if source degraded (§5.1)
+    vol_contrib = 2 if factors.get("volume_spike") else 0
+    breakdown["volume_spike_contribution"] = vol_contrib
+    score += vol_contrib
+
+    sector_contrib = 2 if (
+        factors.get("sector_aligned") and
+        source_statuses.get("political") == "healthy"
+    ) else 0
+    breakdown["sector_aligned_contribution"] = sector_contrib
+    score += sector_contrib
+
+    news_contrib = 2 if (
+        factors.get("no_recent_news") and
+        source_statuses.get("news") == "healthy"
+    ) else 0
+    breakdown["no_recent_news_contribution"] = news_contrib
+    score += news_contrib
+
+    repeat_contrib = 2 if factors.get("repeat_spike") else 0
+    breakdown["repeat_spike_contribution"] = repeat_contrib
+    score += repeat_contrib
+
+    options_contrib = 1 if (
+        factors.get("options_proxy") and
+        source_statuses.get("options_proxy") == "healthy"
+    ) else 0
+    breakdown["options_proxy_contribution"] = options_contrib
+    score += options_contrib
+
+    # Penalties
+    if factors.get("earnings_soon"):
+        score -= 3
+    if factors.get("late_entry"):
+        score -= 2
+    if factors.get("small_cap"):
+        score -= 1
+
+    return score, breakdown

@@ -132,6 +132,32 @@ def _write_signal(
         )
 
 
+def _should_suppress(
+    ticker: str,
+    new_score: int,
+    last_signal_time,
+    last_signal_score,
+) -> bool:
+    """
+    §9 duplicate suppression logic — extracted for testability.
+    Returns True if signal should be suppressed.
+    """
+    if last_signal_time is None:
+        return False
+
+    now = datetime.now(timezone.utc)
+    hours_since = (now - last_signal_time).total_seconds() / 3600
+
+    if hours_since >= COOLDOWN_HOURS:
+        return False  # outside cooldown window
+
+    # Inside cooldown — check score jump exception
+    if last_signal_score is not None and new_score >= last_signal_score + COOLDOWN_SCORE_DELTA:
+        return False  # score jumped enough to override
+
+    return True
+
+
 def run() -> None:
     """
     Main signal engine loop.

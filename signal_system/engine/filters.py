@@ -27,13 +27,23 @@ def _earnings_soon(ticker: str) -> bool:
     """True if earnings within EARNINGS_BUFFER_DAYS."""
     try:
         cal = yf.Ticker(ticker).calendar
-        if cal is None or cal.empty:
+        if cal is None:
             return False
-        # calendar returns a DataFrame; earnings date is in columns
-        if "Earnings Date" in cal.columns:
-            dates = cal["Earnings Date"].dropna()
-        elif hasattr(cal, "index") and "Earnings Date" in cal.index:
-            dates = [cal.loc["Earnings Date"]]
+
+        # calendar may be a DataFrame or plain dict depending on yfinance version
+        import pandas as pd
+        if isinstance(cal, pd.DataFrame):
+            if cal.empty:
+                return False
+            if "Earnings Date" in cal.columns:
+                dates = cal["Earnings Date"].dropna().tolist()
+            elif "Earnings Date" in cal.index:
+                dates = [cal.loc["Earnings Date"]]
+            else:
+                return False
+        elif isinstance(cal, dict):
+            raw = cal.get("Earnings Date", [])
+            dates = raw if isinstance(raw, list) else [raw]
         else:
             return False
 
@@ -125,3 +135,21 @@ def apply(
 def earnings_soon(ticker: str) -> bool:
     """Public wrapper — use this instead of _earnings_soon directly."""
     return _earnings_soon(ticker)
+
+
+# -- Public aliases for testing and external use --
+def passes_liquidity(row: dict) -> bool:
+    return _avg_volume_ok(row.get("avg_volume_20d", 0))
+
+def passes_market_cap(row: dict) -> bool:
+    cap = row.get("market_cap")
+    if cap is None:
+        return False
+    return _market_cap_ok_value(cap)
+
+def passes_late_entry(row: dict) -> bool:
+    return _price_not_late(row.get("pct_change", 0))
+
+def _market_cap_ok_value(cap: float) -> bool:
+    """Value-based market cap check — used by passes_market_cap."""
+    return cap >= MIN_MARKET_CAP

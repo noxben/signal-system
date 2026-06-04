@@ -1,0 +1,3 @@
+# Dev/test only — not installed in production
+pytest==8.2.0
+pytest-mock==3.14.0
