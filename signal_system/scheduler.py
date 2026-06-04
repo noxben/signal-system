@@ -10,6 +10,12 @@ Start:
 import logging
 import os
 import threading
+import sys
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    stream=sys.stdout,  # force to stdout, not stderr
+)
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
