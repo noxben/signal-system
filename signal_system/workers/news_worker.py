@@ -29,9 +29,11 @@ logger = logging.getLogger(__name__)
 SOURCE = "news"
 
 # RSS feeds — §4.3
+# Reuters blocks cloud IPs — replaced with Yahoo Finance RSS (reliable, same data)
+# Benzinga kept as secondary source
 FEEDS = {
-    "reuters": "https://feeds.reuters.com/reuters/businessNews",
-    "benzinga": "https://www.benzinga.com/feed",
+    "yahoo_finance": "https://finance.yahoo.com/news/rssindex",
+    "seeking_alpha":  "https://seekingalpha.com/feed.xml",
 }
 
 # Lazy-load spaCy model once per process

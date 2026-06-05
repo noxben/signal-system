@@ -2,104 +2,68 @@
 """
 market_worker — runs every 5 minutes during market hours.
 
-Pulls price + volume for all 37 watchlist tickers via yfinance.
+Fetches price + volume for all 37 watchlist tickers via yfinance.
+Uses individual ticker calls with delay to avoid rate limiting on cloud IPs.
 Writes raw snapshot to market_data table.
-Updates source_health on every run (success or failure).
-
-§4.1, §5, §14.1
 """
 
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 import yfinance as yf
-import pandas as pd
 from sqlalchemy import text
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ..db import get_db
 from ..health import mark_success, mark_failure
 from ..config.watchlist import ALL_TICKERS
 
 logger = logging.getLogger(__name__)
-
 SOURCE = "market"
 
-# Retry: 3 attempts, backoff 1s → 4s → 16s  (§5.1)
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=16),
-    reraise=True,
-)
-def _fetch_yfinance(tickers: list[str]) -> pd.DataFrame:
-    """
-    Fetch latest price + volume for all tickers in one batch call.
-    Returns DataFrame with columns: ticker, price, volume, avg_volume_20d, pct_change.
-    """
-    raw = yf.download(
-        tickers=tickers,
-        period="1mo",       # need 20d history for avg_volume_20d
-        interval="5m",
-        group_by="ticker",
-        auto_adjust=True,
-        progress=False,
-        threads=True,
-    )
-
-    records = []
-    now = datetime.now(timezone.utc)
-
-    for ticker in tickers:
-        try:
-            if len(tickers) == 1:
-                df = raw
-            else:
-                df = raw[ticker]
-
-            if df.empty:
-                logger.warning("ticker=%s no data returned", ticker)
-                continue
-
-            # Latest bar
-            latest = df.iloc[-1]
-            price      = float(latest["Close"])
-            volume     = int(latest["Volume"])
-
-            # 20-day average volume using daily data
-            daily = yf.Ticker(ticker).history(period="1mo", interval="1d")
-            avg_vol_20d = int(daily["Volume"].tail(20).mean()) if len(daily) >= 5 else volume
-
-            # Percent change vs previous close
-            if len(df) >= 2:
-                prev_close  = float(df.iloc[-2]["Close"])
-                pct_change  = ((price - prev_close) / prev_close) * 100 if prev_close else 0.0
-            else:
-                pct_change  = 0.0
-
-            records.append({
-                "ticker":        ticker,
-                "price":         price,
-                "volume":        volume,
-                "avg_volume_20d": avg_vol_20d,
-                "pct_change":    round(pct_change, 4),
-                "ingested_at":   now,
-            })
-
-        except Exception as e:
-            logger.error("ticker=%s parse error: %s", ticker, e)
-
-    return pd.DataFrame(records)
+# Delay between individual ticker calls — avoids Yahoo rate limiting
+INTER_TICKER_DELAY = float(os.getenv("TICKER_FETCH_DELAY", "0.5"))
 
 
-def _write_to_db(df: pd.DataFrame) -> None:
-    """Insert raw snapshot rows. Each run is a new set of rows — no upsert."""
-    if df.empty:
-        logger.warning("Nothing to write — empty DataFrame")
+def _fetch_ticker(ticker: str, now: datetime) -> dict | None:
+    """Fetch single ticker. Returns data dict or None on failure."""
+    try:
+        t    = yf.Ticker(ticker)
+        hist = t.history(period="1mo", interval="1d")
+
+        if hist.empty or len(hist) < 2:
+            logger.warning("ticker=%s insufficient history", ticker)
+            return None
+
+        latest   = hist.iloc[-1]
+        prev     = hist.iloc[-2]
+        price    = float(latest["Close"])
+        volume   = int(latest["Volume"])
+
+        avg_vol_20d = int(hist["Volume"].tail(20).mean()) if len(hist) >= 5 else volume
+
+        pct_change = 0.0
+        if prev["Close"] > 0:
+            pct_change = round((price - float(prev["Close"])) / float(prev["Close"]) * 100, 4)
+
+        return {
+            "ticker":         ticker,
+            "price":          price,
+            "volume":         volume,
+            "avg_volume_20d": avg_vol_20d,
+            "pct_change":     pct_change,
+            "ingested_at":    now,
+        }
+    except Exception as e:
+        logger.warning("ticker=%s fetch error: %s", ticker, e)
+        return None
+
+
+def _write_to_db(records: list[dict]) -> None:
+    if not records:
+        logger.warning("Nothing to write — empty records list")
         return
-
-    rows = df.to_dict(orient="records")
-
     with get_db() as db:
         db.execute(
             text("""
@@ -108,25 +72,40 @@ def _write_to_db(df: pd.DataFrame) -> None:
                 VALUES
                     (:ticker, :price, :volume, :avg_volume_20d, :pct_change, :ingested_at)
             """),
-            rows,
+            records,
         )
-
-    logger.info("market_worker wrote %d rows", len(rows))
+    logger.info("market_worker wrote %d rows", len(records))
 
 
 def run() -> None:
-    """
-    Entry point called by Celery Beat every 5 minutes.
-    §5: raw data stored before any processing.
-    §5.1: on failure, mark degraded and continue — do NOT raise into the scheduler.
-    """
     logger.info("market_worker starting run")
-    try:
-        df = _fetch_yfinance(ALL_TICKERS)
-        _write_to_db(df)
+    now     = datetime.now(timezone.utc)
+    records = []
+    errors  = []
+
+    for ticker in ALL_TICKERS:
+        row = _fetch_ticker(ticker, now)
+        if row:
+            records.append(row)
+        else:
+            errors.append(ticker)
+        time.sleep(INTER_TICKER_DELAY)
+
+    if records:
+        try:
+            _write_to_db(records)
+        except Exception as e:
+            logger.error("market_worker DB write failed: %s", e)
+            mark_failure(SOURCE, str(e))
+            return
+
+    logger.info(
+        "market_worker done — %d fetched, %d failed: %s",
+        len(records), len(errors), errors if errors else "none"
+    )
+
+    # Only mark degraded if ALL tickers failed
+    if len(records) == 0:
+        mark_failure(SOURCE, f"All {len(errors)} tickers failed")
+    else:
         mark_success(SOURCE)
-        logger.info("market_worker completed successfully")
-    except Exception as e:
-        mark_failure(SOURCE, str(e))
-        logger.error("market_worker failed after retries: %s", e)
-        # Do not re-raise — degraded state is recorded, pipeline continues
