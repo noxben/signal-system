@@ -24,7 +24,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import yfinance as yf
+import requests
 import pandas as pd
 from sqlalchemy import text
 
@@ -45,24 +45,39 @@ MFE_DAYS        = 5     # §12 — MFE window
 
 def _fetch_price_history(ticker: str, entry_time: datetime) -> Optional[pd.DataFrame]:
     """
-    Fetch daily OHLCV from entry_time to entry_time + MFE_DAYS.
-    Returns DataFrame indexed by date or None on failure.
+    Fetch daily bars from entry_time to entry_time + MFE_DAYS via Alpaca.
+    Returns DataFrame with Close column or None on failure.
     """
+    api_key    = os.getenv("ALPACA_API_KEY", "")
+    api_secret = os.getenv("ALPACA_API_SECRET", "")
+    if not api_key or not api_secret:
+        logger.warning("Alpaca credentials not set — outcome worker cannot fetch prices")
+        return None
     try:
-        start = entry_time.date()
-        end   = (entry_time + timedelta(days=MFE_DAYS + 2)).date()  # buffer for weekends
-        df    = yf.download(
-            ticker,
-            start=str(start),
-            end=str(end),
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
+        start = entry_time.date().isoformat()
+        end   = (entry_time + timedelta(days=MFE_DAYS + 3)).date().isoformat()
+        url   = f"https://data.alpaca.markets/v2/stocks/{ticker}/bars"
+        resp  = requests.get(
+            url,
+            headers={
+                "APCA-API-KEY-ID":     api_key,
+                "APCA-API-SECRET-KEY": api_secret,
+            },
+            params={
+                "start":     start,
+                "end":       end,
+                "timeframe": "1Day",
+                "feed":      "iex",
+            },
+            timeout=15,
         )
-        if df.empty:
-            logger.warning("ticker=%s no price history returned", ticker)
+        resp.raise_for_status()
+        bars = resp.json().get("bars", [])
+        if not bars:
+            logger.warning("ticker=%s no price history from Alpaca", ticker)
             return None
-        return df
+        closes = [b["c"] for b in bars]
+        return pd.DataFrame({"Close": closes})
     except Exception as e:
         logger.error("ticker=%s price history fetch failed: %s", ticker, e)
         return None

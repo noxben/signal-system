@@ -10,12 +10,6 @@ Start:
 import logging
 import os
 import threading
-import sys
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-    stream=sys.stdout,  # force to stdout, not stderr
-)
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -27,6 +21,7 @@ from .tasks import (
     run_news_worker,
     run_political_worker,
     run_signal_engine,
+    run_avg_volume_worker,
     run_outcome_worker,
 )
 
@@ -50,7 +45,7 @@ def build_scheduler() -> BlockingScheduler:
         run_market_worker,
         trigger=IntervalTrigger(seconds=300),
         id="market_worker",
-        name="Market data (yfinance)",
+        name="Market data (Alpaca)",
         max_instances=1,
         misfire_grace_time=60,
     )
@@ -79,7 +74,8 @@ def build_scheduler() -> BlockingScheduler:
         misfire_grace_time=60,
     )
     scheduler.add_job(
-        run_outcome_worker,
+        run_avg_volume_worker,
+    run_outcome_worker,
         trigger=CronTrigger(hour=17, minute=0),
         id="outcome_worker",
         name="Outcome worker",

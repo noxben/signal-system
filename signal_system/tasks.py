@@ -56,6 +56,11 @@ def run_signal_engine():
     run()
 
 
+def run_avg_volume_worker():
+    from .workers.avg_volume_worker import run
+    run()
+
+
 def run_outcome_worker():
     from .workers.outcome_worker import run
     run()

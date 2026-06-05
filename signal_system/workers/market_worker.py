@@ -2,17 +2,19 @@
 """
 market_worker — runs every 5 minutes during market hours.
 
-Fetches price + volume for all 37 watchlist tickers via yfinance.
-Uses individual ticker calls with delay to avoid rate limiting on cloud IPs.
-Writes raw snapshot to market_data table.
+Uses Alpaca Market Data API (free with paper account):
+  - /v2/stocks/snapshots — batch snapshot for all watchlist tickers
+    Returns: latest trade price, daily volume, prev close
+
+Real-time IEX data, no IP blocking, generous rate limits.
+Same API key used for paper trading execution later.
 """
 
 import logging
 import os
-import time
 from datetime import datetime, timezone
 
-import yfinance as yf
+import requests
 from sqlalchemy import text
 
 from ..db import get_db
@@ -22,47 +24,92 @@ from ..config.watchlist import ALL_TICKERS
 logger = logging.getLogger(__name__)
 SOURCE = "market"
 
-# Delay between individual ticker calls — avoids Yahoo rate limiting
-INTER_TICKER_DELAY = float(os.getenv("TICKER_FETCH_DELAY", "0.5"))
+ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY", "")
+ALPACA_API_SECRET = os.getenv("ALPACA_API_SECRET", "")
+ALPACA_DATA_URL   = os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets")
 
 
-def _fetch_ticker(ticker: str, now: datetime) -> dict | None:
-    """Fetch single ticker. Returns data dict or None on failure."""
-    try:
-        t    = yf.Ticker(ticker)
-        hist = t.history(period="1mo", interval="1d")
+def _headers() -> dict:
+    return {
+        "APCA-API-KEY-ID":     ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_API_SECRET,
+        "Accept":              "application/json",
+    }
 
-        if hist.empty or len(hist) < 2:
-            logger.warning("ticker=%s insufficient history", ticker)
-            return None
 
-        latest   = hist.iloc[-1]
-        prev     = hist.iloc[-2]
-        price    = float(latest["Close"])
-        volume   = int(latest["Volume"])
+def _fetch_snapshots() -> list[dict]:
+    """
+    Fetch current snapshot for all watchlist tickers in one call.
+    Alpaca snapshots include: latest trade, latest quote, daily bar, prev daily bar.
+    """
+    url = f"{ALPACA_DATA_URL}/v2/stocks/snapshots"
 
-        avg_vol_20d = int(hist["Volume"].tail(20).mean()) if len(hist) >= 5 else volume
+    resp = requests.get(
+        url,
+        headers=_headers(),
+        params={
+            "symbols": ",".join(ALL_TICKERS),
+            "feed":    "iex",  # free tier — IEX feed
+        },
+        timeout=15,
+    )
 
-        pct_change = 0.0
-        if prev["Close"] > 0:
-            pct_change = round((price - float(prev["Close"])) / float(prev["Close"]) * 100, 4)
+    if resp.status_code == 401:
+        raise ValueError("Alpaca API key invalid — check ALPACA_API_KEY and ALPACA_API_SECRET")
+    if resp.status_code == 429:
+        raise ValueError("Alpaca rate limit hit")
+    resp.raise_for_status()
 
-        return {
+    data = resp.json()
+    now  = datetime.now(timezone.utc)
+    records = []
+
+    for ticker, snap in data.items():
+        if ticker not in set(ALL_TICKERS):
+            continue
+
+        # Latest trade price
+        latest_trade = snap.get("latestTrade", {})
+        price = latest_trade.get("p")  # price field
+
+        # Daily bar for volume
+        daily_bar = snap.get("dailyBar", {})
+        volume    = daily_bar.get("v", 0)
+
+        # Previous daily bar for avg volume proxy and pct change baseline
+        prev_bar   = snap.get("prevDailyBar", {})
+        prev_close = prev_bar.get("c", 0)
+        prev_vol   = prev_bar.get("v", 0)
+
+        # Use prev day volume as avg_volume_20d proxy (best available on free tier)
+        avg_volume_20d = prev_vol or volume or 1
+
+        # Pct change vs previous close
+        if price and prev_close and prev_close > 0:
+            pct_change = round((price - prev_close) / prev_close * 100, 4)
+        else:
+            pct_change = 0.0
+
+        if not price:
+            logger.warning("ticker=%s no price in snapshot", ticker)
+            continue
+
+        records.append({
             "ticker":         ticker,
-            "price":          price,
-            "volume":         volume,
-            "avg_volume_20d": avg_vol_20d,
+            "price":          float(price),
+            "volume":         int(volume),
+            "avg_volume_20d": int(avg_volume_20d),
             "pct_change":     pct_change,
             "ingested_at":    now,
-        }
-    except Exception as e:
-        logger.warning("ticker=%s fetch error: %s", ticker, e)
-        return None
+        })
+
+    logger.info("alpaca snapshot returned %d tickers", len(records))
+    return records
 
 
 def _write_to_db(records: list[dict]) -> None:
     if not records:
-        logger.warning("Nothing to write — empty records list")
+        logger.warning("market_worker — nothing to write")
         return
     with get_db() as db:
         db.execute(
@@ -79,33 +126,21 @@ def _write_to_db(records: list[dict]) -> None:
 
 def run() -> None:
     logger.info("market_worker starting run")
-    now     = datetime.now(timezone.utc)
-    records = []
-    errors  = []
 
-    for ticker in ALL_TICKERS:
-        row = _fetch_ticker(ticker, now)
-        if row:
-            records.append(row)
-        else:
-            errors.append(ticker)
-        time.sleep(INTER_TICKER_DELAY)
+    if not ALPACA_API_KEY or not ALPACA_API_SECRET:
+        logger.warning("Alpaca credentials not set — market_worker skipped")
+        mark_failure(SOURCE, "ALPACA_API_KEY or ALPACA_API_SECRET not configured")
+        return
 
-    if records:
-        try:
+    try:
+        records = _fetch_snapshots()
+        if records:
             _write_to_db(records)
-        except Exception as e:
-            logger.error("market_worker DB write failed: %s", e)
-            mark_failure(SOURCE, str(e))
-            return
-
-    logger.info(
-        "market_worker done — %d fetched, %d failed: %s",
-        len(records), len(errors), errors if errors else "none"
-    )
-
-    # Only mark degraded if ALL tickers failed
-    if len(records) == 0:
-        mark_failure(SOURCE, f"All {len(errors)} tickers failed")
-    else:
-        mark_success(SOURCE)
+            mark_success(SOURCE)
+            logger.info("market_worker completed — %d tickers written", len(records))
+        else:
+            logger.warning("market_worker — snapshot returned no data (market may be closed)")
+            mark_success(SOURCE)  # not a failure — just no data outside hours
+    except Exception as e:
+        logger.error("market_worker failed: %s", e)
+        mark_failure(SOURCE, str(e))
