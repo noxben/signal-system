@@ -28,6 +28,7 @@ services:
       - ./sql/004_political_events.sql:/docker-entrypoint-initdb.d/04_political_events.sql
       - ./sql/005_add_sector_to_signals.sql:/docker-entrypoint-initdb.d/05_add_sector.sql
       - ./sql/006_add_outcome_source.sql:/docker-entrypoint-initdb.d/06_outcome_source.sql
+      - ./sql/007_avg_volume.sql:/docker-entrypoint-initdb.d/07_avg_volume.sql|
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U signals_user -d signals_db"]
       interval: 5s

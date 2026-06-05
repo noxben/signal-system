@@ -41,6 +41,7 @@ def _start_dashboard():
 def build_scheduler() -> BlockingScheduler:
     scheduler = BlockingScheduler(timezone="America/New_York")
 
+    # Market data — every 5 min during market hours
     scheduler.add_job(
         run_market_worker,
         trigger=IntervalTrigger(seconds=300),
@@ -49,6 +50,8 @@ def build_scheduler() -> BlockingScheduler:
         max_instances=1,
         misfire_grace_time=60,
     )
+
+    # News RSS — every 15 min during market hours
     scheduler.add_job(
         run_news_worker,
         trigger=IntervalTrigger(seconds=900),
@@ -57,6 +60,8 @@ def build_scheduler() -> BlockingScheduler:
         max_instances=1,
         misfire_grace_time=120,
     )
+
+    # Political — every 6 hours, any time
     scheduler.add_job(
         run_political_worker,
         trigger=IntervalTrigger(seconds=21600),
@@ -65,6 +70,8 @@ def build_scheduler() -> BlockingScheduler:
         max_instances=1,
         misfire_grace_time=300,
     )
+
+    # Signal engine — every 5 min during market hours
     scheduler.add_job(
         run_signal_engine,
         trigger=IntervalTrigger(seconds=300),
@@ -73,10 +80,20 @@ def build_scheduler() -> BlockingScheduler:
         max_instances=1,
         misfire_grace_time=60,
     )
+
+    # 20-day avg volume — once daily at 09:35 ET (just after open)
     scheduler.add_job(
         run_avg_volume_worker,
-    run_outcome_worker,
-        trigger=CronTrigger(hour=17, minute=0),
+        trigger=CronTrigger(hour=9, minute=35, timezone="America/New_York"),
+        id="avg_volume_worker",
+        name="Avg volume (20d)",
+        max_instances=1,
+    )
+
+    # Outcome worker — daily at 17:00 ET
+    scheduler.add_job(
+        run_outcome_worker,
+        trigger=CronTrigger(hour=17, minute=0, timezone="America/New_York"),
         id="outcome_worker",
         name="Outcome worker",
         max_instances=1,
