@@ -84,7 +84,7 @@ def build_scheduler() -> BlockingScheduler:
     # 20-day avg volume — once daily at 09:35 ET (just after open)
     scheduler.add_job(
         run_avg_volume_worker,
-        trigger=CronTrigger(hour=9, minute=35, timezone="America/New_York"),
+        trigger=CronTrigger(hour=9, minute=35, day_of_week='mon-fri', timezone="America/New_York"),
         id="avg_volume_worker",
         name="Avg volume (20d)",
         max_instances=1,
@@ -93,7 +93,7 @@ def build_scheduler() -> BlockingScheduler:
     # Outcome worker — daily at 17:00 ET
     scheduler.add_job(
         run_outcome_worker,
-        trigger=CronTrigger(hour=17, minute=0, timezone="America/New_York"),
+        trigger=CronTrigger(hour=17, minute=0, day_of_week='mon-fri', timezone="America/New_York"),
         id="outcome_worker",
         name="Outcome worker",
         max_instances=1,

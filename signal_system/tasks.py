@@ -2,8 +2,10 @@
 """
 Task functions called by the scheduler.
 Plain Python — no Celery, no decorators.
-All logic lives in the worker/engine modules; these are thin
-wrappers with the market-hours guard applied where needed.
+
+Market hours guard: Mon-Fri 09:30-16:00 ET only.
+Political worker runs Mon-Fri any time (filings post outside market hours).
+Avg volume + outcome workers run on cron — weekday-only via scheduler config.
 """
 
 import logging
@@ -19,11 +21,17 @@ MARKET_CLOSE = (16, 0)
 
 
 def _is_market_hours() -> bool:
+    """True only Mon-Fri 09:30-16:00 ET."""
     now = datetime.now(MARKET_TZ)
     if now.weekday() >= 5:
         return False
     t = (now.hour, now.minute)
     return MARKET_OPEN <= t < MARKET_CLOSE
+
+
+def _is_weekday() -> bool:
+    """True Mon-Fri regardless of time."""
+    return datetime.now(MARKET_TZ).weekday() < 5
 
 
 def run_market_worker():
@@ -43,7 +51,10 @@ def run_news_worker():
 
 
 def run_political_worker():
-    # Runs every 6h regardless of market hours — contracts/filings post anytime
+    # Filings post any time but no point polling on weekends
+    if not _is_weekday():
+        logger.debug("political_worker skipped — weekend")
+        return
     from .workers.political_worker import run
     run()
 
@@ -57,10 +68,18 @@ def run_signal_engine():
 
 
 def run_avg_volume_worker():
+    # Scheduler already uses cron Mon-Fri — guard here as safety net
+    if not _is_weekday():
+        logger.debug("avg_volume_worker skipped — weekend")
+        return
     from .workers.avg_volume_worker import run
     run()
 
 
 def run_outcome_worker():
+    # Scheduler already uses cron Mon-Fri — guard here as safety net
+    if not _is_weekday():
+        logger.debug("outcome_worker skipped — weekend")
+        return
     from .workers.outcome_worker import run
     run()
