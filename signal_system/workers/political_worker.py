@@ -157,7 +157,7 @@ def _fetch_usaspending() -> list[dict]:
                 items.append({
                     "ticker":        ticker,
                     "sector":        TICKER_SECTOR.get(ticker),
-                    "event_type":    "gov_contract",
+                    "event_type":    "contract",
                     "size_value":    amount,
                     "reported_date": award.get("Award Date"),
                     "raw_json":      award,
