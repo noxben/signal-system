@@ -241,8 +241,9 @@ def run() -> None:
         # Signal A: volume spike is the entry condition for all further processing
         if avg_vol <= 0 or (volume / avg_vol) < VOLUME_MULTIPLIER:
             continue
-        if abs(pct_change) >= 2.0:
-            continue
+        # omitting and letting filters handle this
+        # if abs(pct_change) >= 2.0:
+            # continue 
 
         logger.info("ticker=%s volume spike detected (%.1fx)", ticker, volume / avg_vol)
 
