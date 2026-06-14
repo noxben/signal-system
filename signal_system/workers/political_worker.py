@@ -74,7 +74,9 @@ def _fetch_edgar_form4() -> list[dict]:
 
             for hit in hits:
                 src = hit.get("_source", {})
-				items.append({
+                    amount = None
+
+                items.append({
 					"ticker":        ticker,
 					"sector":        TICKER_SECTOR.get(ticker),
 					"event_type":    "insider_trade",

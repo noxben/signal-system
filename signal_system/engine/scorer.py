@@ -124,7 +124,7 @@ def compute(
 
     # Volume spike baseline
     volume_ratio = volume / avg_volume_20d if avg_volume_20d > 0 else 0
-    is_spike     = volume_ratio >= VOLUME_MULTIPLIER and abs(pct_change) < 2.0
+    is_spike = volume_ratio >= VOLUME_MULTIPLIER and abs(pct_change) < LATE_ENTRY_PCT
     if is_spike:
         score += SCORE_VOLUME_SPIKE
     factors["volume_spike"]   = is_spike
