@@ -74,18 +74,16 @@ def _fetch_edgar_form4() -> list[dict]:
 
             for hit in hits:
                 src = hit.get("_source", {})
-                    amount = None
-
                 items.append({
-					"ticker":        ticker,
-					"sector":        TICKER_SECTOR.get(ticker),
-					"event_type":    "insider_trade",
-					"size_value":    None,
-					"reported_date": src.get("period_of_report"),
-					"raw_json":      src,
-					"ingested_at":   now,
-					"internal_id":   None,   # EDGAR has no integer ID — dedup skipped
-				})
+                    "ticker":        ticker,
+                    "sector":        TICKER_SECTOR.get(ticker),
+                    "event_type":    "insider_trade",
+                    "size_value":    None,
+                    "reported_date": src.get("period_of_report"),
+                    "raw_json":      src,
+                    "ingested_at":   now,
+                    "internal_id":   None,   # EDGAR has no integer ID — dedup skipped
+                })
 
         except Exception as e:
             logger.warning("edgar ticker=%s error: %s", ticker, e)
@@ -115,6 +113,7 @@ CONTRACT_SEARCH_TERMS: dict[str, str] = {
     "CAT":  "Caterpillar",
     "XOM":  "ExxonMobil",
     "CVX":  "Chevron",
+    "SPCX":  "SpaceX",
 }
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=16), reraise=True)
@@ -158,15 +157,15 @@ def _fetch_usaspending() -> list[dict]:
                     amount = None
 
                 items.append({
-					"ticker":        ticker,
-					"sector":        TICKER_SECTOR.get(ticker),
-					"event_type":    "contract",
-					"size_value":    amount,
-					"reported_date": award.get("Award Date"),
-					"raw_json":      award,
-					"ingested_at":   now,
-					"internal_id":   award.get("internal_id"),   # USASpending integer ID
-				})
+                    "ticker":        ticker,
+                    "sector":        TICKER_SECTOR.get(ticker),
+                    "event_type":    "contract",
+                    "size_value":    amount,
+                    "reported_date": award.get("Award Date"),
+                    "raw_json":      award,
+                    "ingested_at":   now,
+                    "internal_id":   award.get("internal_id"),   # USASpending integer ID
+                })
 
         except Exception as e:
             logger.warning("usaspending ticker=%s error: %s", ticker, e)
@@ -189,17 +188,17 @@ def _write_to_db(items: list[dict]) -> None:
     with get_db() as db:
         for item in items:
             result = db.execute(
-				text("""
-					INSERT INTO political_events
-						(ticker, sector, event_type, size_value,
-						 reported_date, raw_json, ingested_at, internal_id)
-					VALUES
-						(:ticker, :sector, :event_type, :size_value,
-						 :reported_date, :raw_json, :ingested_at, :internal_id)
-					ON CONFLICT (internal_id) WHERE internal_id IS NOT NULL DO NOTHING
-				"""),
-				{**item, "raw_json": json.dumps(item["raw_json"])},
-			)
+                text("""
+                    INSERT INTO political_events
+                        (ticker, sector, event_type, size_value,
+                         reported_date, raw_json, ingested_at, internal_id)
+                    VALUES
+                        (:ticker, :sector, :event_type, :size_value,
+                         :reported_date, :raw_json, :ingested_at, :internal_id)
+                    ON CONFLICT (internal_id) WHERE internal_id IS NOT NULL DO NOTHING
+                """),
+                {**item, "raw_json": json.dumps(item["raw_json"])},
+            )
             written += result.rowcount
     logger.info("political_worker wrote %d events (%d duplicates skipped)",
                 written, len(items) - written)
