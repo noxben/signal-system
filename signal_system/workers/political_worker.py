@@ -72,18 +72,27 @@ def _fetch_edgar_form4() -> list[dict]:
             data = resp.json()
             hits = data.get("hits", {}).get("hits", [])
 
-            for hit in hits:
-                src = hit.get("_source", {})
-                items.append({
-                    "ticker":        ticker,
-                    "sector":        TICKER_SECTOR.get(ticker),
-                    "event_type":    "insider_trade",
-                    "size_value":    None,
-                    "reported_date": src.get("period_of_report"),
-                    "raw_json":      src,
-                    "ingested_at":   now,
-                    "internal_id":   None,   # EDGAR has no integer ID — dedup skipped
-                })
+			for hit in hits:
+				src = hit.get("_source", {})
+				
+				# period_of_report is the trade date; fall back to file_date
+				raw_date = src.get("period_of_report") or src.get("file_date")
+				try:
+					from datetime import date
+					reported = date.fromisoformat(raw_date) if raw_date else None
+				except (ValueError, TypeError):
+					reported = None
+			
+				items.append({
+					"ticker":        ticker,
+					"sector":        TICKER_SECTOR.get(ticker),
+					"event_type":    "insider_trade",
+					"size_value":    None,   # Form 4 via full-text search doesn't give trade value
+					"reported_date": reported,
+					"raw_json":      src,
+					"ingested_at":   now,
+					"internal_id":   None,
+				})
 
         except Exception as e:
             logger.warning("edgar ticker=%s error: %s", ticker, e)

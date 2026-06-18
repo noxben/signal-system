@@ -68,23 +68,23 @@ def _classify_category(text_lower: str) -> Optional[str]:
 
 
 def _extract_tickers(headline: str, body: str = "") -> list[str]:
-    """
-    Use spaCy NER to extract ORG entities, then match against watchlist.
-    §4.3: do not use keyword matching alone.
-    """
     nlp = _get_nlp()
     combined = f"{headline} {body}".strip()
     doc = nlp(combined)
 
     found = set()
 
-    # NER: look for ORG entities that match watchlist tickers or company names
     for ent in doc.ents:
         token = ent.text.upper().strip(".$,")
+        # Direct ticker match
         if token in TICKER_SET:
             found.add(token)
+        # Company name match
+        mapped = COMPANY_TO_TICKER.get(token)
+        if mapped and mapped in TICKER_SET:
+            found.add(mapped)
 
-    # Secondary pass: direct ticker mention (e.g. "$NVDA" or "NVDA" as standalone token)
+    # Secondary pass for explicit ticker mentions
     for token in doc:
         clean = token.text.upper().strip("$.,")
         if clean in TICKER_SET:
