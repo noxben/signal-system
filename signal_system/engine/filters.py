@@ -45,11 +45,20 @@ def _market_cap_ok(ticker: str) -> bool:
 def _earnings_soon(ticker: str) -> bool:
     """
     Earnings check via DB — looks for news tagged 'earnings' for this ticker
-    within EARNINGS_BUFFER_DAYS. Conservative: returns False (not soon) on
-    any data error so we don't silently block signals.
+    within EARNINGS_BUFFER_DAYS.
+
+    §8 is a HARD REJECT filter — trading into earnings is the exact noise
+    this filter exists to block. If the check can't determine earnings
+    status (DB error, query failure, etc.), we MUST fail closed: assume
+    earnings risk is present and reject the signal. Failing open (assuming
+    no earnings risk) defeats the purpose of a hard filter and lets risk
+    through silently, which is worse than a missed signal.
 
     Note: yfinance earnings calendar is blocked on Railway cloud IPs.
     Using news-based proxy until a reliable free API is available.
+
+    tagged_tickers is jsonb, NOT a native Postgres array — ANY() does not
+    work against it. Use jsonb containment (@>) instead.
     """
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=1)
@@ -58,7 +67,7 @@ def _earnings_soon(ticker: str) -> bool:
             count = db.execute(
                 text("""
                     SELECT COUNT(*) FROM news_items
-                    WHERE :ticker = ANY(tagged_tickers)
+                    WHERE tagged_tickers @> to_jsonb(:ticker::text)
                       AND category = 'earnings'
                       AND published_at BETWEEN :cutoff AND :end
                 """),
@@ -66,8 +75,11 @@ def _earnings_soon(ticker: str) -> bool:
             ).scalar()
         return (count or 0) > 0
     except Exception as e:
-        logger.warning("ticker=%s earnings check failed: %s", ticker, e)
-        return False  # don't block on error
+        logger.error(
+            "ticker=%s earnings check failed, FAILING CLOSED (treating as earnings risk): %s",
+            ticker, e,
+        )
+        return True  # fail closed — hard filter must reject on uncertainty
 
 
 def _has_prior_signal_or_new_ticker(ticker: str) -> tuple[bool, bool]:
