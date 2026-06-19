@@ -23,6 +23,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from ..db import get_db
 from ..health import mark_success, mark_failure
 from ..config.watchlist import ALL_TICKERS
+from ..config.company_names import COMPANY_TO_TICKER
 
 logger = logging.getLogger(__name__)
 
@@ -68,23 +69,36 @@ def _classify_category(text_lower: str) -> Optional[str]:
 
 
 def _extract_tickers(headline: str, body: str = "") -> list[str]:
+    """
+    Use spaCy NER to extract ORG entities, then match against watchlist.
+    §4.3: do not use keyword matching alone.
+
+    Two ways an entity can resolve to a ticker:
+      1. Direct match — entity text IS the ticker (e.g. "$NVDA", "NVDA")
+      2. Company name match — entity text is a company name spaCy
+         recognized as an ORG (e.g. "Nvidia", "Pfizer") which we map
+         to its ticker via COMPANY_TO_TICKER.
+    """
     nlp = _get_nlp()
     combined = f"{headline} {body}".strip()
     doc = nlp(combined)
 
     found = set()
 
+    # NER: look for ORG entities that match watchlist tickers or company names
     for ent in doc.ents:
         token = ent.text.upper().strip(".$,")
+
         # Direct ticker match
         if token in TICKER_SET:
             found.add(token)
+
         # Company name match
         mapped = COMPANY_TO_TICKER.get(token)
         if mapped and mapped in TICKER_SET:
             found.add(mapped)
 
-    # Secondary pass for explicit ticker mentions
+    # Secondary pass: direct ticker mention (e.g. "$NVDA" or "NVDA" as standalone token)
     for token in doc:
         clean = token.text.upper().strip("$.,")
         if clean in TICKER_SET:

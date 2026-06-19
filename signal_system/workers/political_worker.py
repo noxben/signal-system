@@ -13,9 +13,11 @@ Disclosure lag still applies — Form 4 must be filed within 2 business
 days of trade; contract awards may post days after signing.
 """
 
+import hashlib
+import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -41,12 +43,30 @@ HEADERS = {"User-Agent": "signal-system research@example.com"}  # SEC requires U
 
 EDGAR_SEARCH = "https://efts.sec.gov/LATEST/search-index"
 
+
+def _stable_filing_id(src: dict) -> int:
+    """
+    EDGAR full-text search results have no integer ID we can dedup on.
+    Hash the raw _source payload into a stable 15-hex-digit int so
+    ON CONFLICT (internal_id) actually works across runs.
+    """
+    raw_str = json.dumps(src, sort_keys=True)
+    return int(hashlib.md5(raw_str.encode()).hexdigest()[:15], 16)
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=16), reraise=True)
 def _fetch_edgar_form4() -> list[dict]:
     """
     Fetch recent Form 4 filings for watchlist tickers.
     Queries EDGAR full-text search — filters to filings mentioning
     our tickers in the last 2 days.
+
+    Note: some Form 4 filings represent routine stock distributions
+    to employees (e.g. RSU vesting) rather than discretionary insider
+    trades. We don't currently distinguish these — §4.2 already treats
+    this source as sector bias/trend only, not entry timing, so the
+    noise is acceptable for MVP. Revisit if false-positive sector
+    alignment becomes a problem during calibration.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d")
     items  = []
@@ -72,27 +92,26 @@ def _fetch_edgar_form4() -> list[dict]:
             data = resp.json()
             hits = data.get("hits", {}).get("hits", [])
 
-			for hit in hits:
-				src = hit.get("_source", {})
-				
-				# period_of_report is the trade date; fall back to file_date
-				raw_date = src.get("period_of_report") or src.get("file_date")
-				try:
-					from datetime import date
-					reported = date.fromisoformat(raw_date) if raw_date else None
-				except (ValueError, TypeError):
-					reported = None
-			
-				items.append({
-					"ticker":        ticker,
-					"sector":        TICKER_SECTOR.get(ticker),
-					"event_type":    "insider_trade",
-					"size_value":    None,   # Form 4 via full-text search doesn't give trade value
-					"reported_date": reported,
-					"raw_json":      src,
-					"ingested_at":   now,
-					"internal_id":   None,
-				})
+            for hit in hits:
+                src = hit.get("_source", {})
+
+                # period_of_report is the trade date; fall back to file_date
+                raw_date = src.get("period_of_report") or src.get("file_date")
+                try:
+                    reported = date.fromisoformat(raw_date) if raw_date else None
+                except (ValueError, TypeError):
+                    reported = None
+
+                items.append({
+                    "ticker":        ticker,
+                    "sector":        TICKER_SECTOR.get(ticker),
+                    "event_type":    "insider_trade",
+                    "size_value":    None,   # full-text search doesn't return trade value
+                    "reported_date": reported,
+                    "raw_json":      src,
+                    "ingested_at":   now,
+                    "internal_id":   _stable_filing_id(src),
+                })
 
         except Exception as e:
             logger.warning("edgar ticker=%s error: %s", ticker, e)
@@ -192,7 +211,6 @@ def _write_to_db(items: list[dict]) -> None:
     if not items:
         return
 
-    import json
     written = 0
     with get_db() as db:
         for item in items:
