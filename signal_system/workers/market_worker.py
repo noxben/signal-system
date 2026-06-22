@@ -120,9 +120,9 @@ def _write_to_db(records: list[dict]) -> None:
         db.execute(
             text("""
                 INSERT INTO market_data
-                    (ticker, price, volume, avg_volume_20d, pct_change, ingested_at)
-                VALUES
-                    (:ticker, :price, :volume, :avg_volume_20d, :pct_change, :ingested_at)
+					(ticker, price, volume, pct_change, ingested_at)
+				VALUES
+					(:ticker, :price, :volume, :pct_change, :ingested_at)
             """),
             records,
         )
