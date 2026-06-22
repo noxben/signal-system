@@ -8,6 +8,8 @@ Weights are initial estimates — do NOT tune until 60+ signals logged.
 import logging
 import os
 from datetime import datetime, timezone, timedelta
+from .market_clock import minutes_since_open
+from ..config.intraday_curve import expected_volume_fraction
 
 from sqlalchemy import text
 
@@ -122,8 +124,18 @@ def compute(
 
     # --- Positive factors ---
 
-    # Volume spike baseline
-    volume_ratio = volume / avg_volume_20d if avg_volume_20d > 0 else 0
+	# Volume spike baseline, time-of-day adjusted — see market_clock.py /
+    # intraday_curve.py. Must match the same calculation signal_engine.py
+    # uses for its pre-filter, or a ticker can pass the engine's spike check
+    # and then get scored as "not a spike" here, or vice versa.
+    now_utc = datetime.now(timezone.utc)
+    mins = minutes_since_open(now_utc)
+    if mins is not None and avg_volume_20d > 0:
+        expected_fraction = expected_volume_fraction(mins)
+        expected_volume = avg_volume_20d * expected_fraction
+        volume_ratio = volume / expected_volume if expected_volume > 0 else 0
+    else:
+        volume_ratio = 0
     is_spike = volume_ratio >= VOLUME_MULTIPLIER and abs(pct_change) < LATE_ENTRY_PCT
     if is_spike:
         score += SCORE_VOLUME_SPIKE

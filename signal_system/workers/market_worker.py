@@ -81,8 +81,9 @@ def _fetch_snapshots() -> list[dict]:
         prev_close = prev_bar.get("c", 0)
         prev_vol   = prev_bar.get("v", 0)
 
+        # redacted for new volume trend schedule
         # Use prev day volume as avg_volume_20d proxy (best available on free tier)
-        avg_volume_20d = prev_vol or volume or 1
+        # avg_volume_20d = prev_vol or volume or 1
 
         # Pct change vs previous close
         if price and prev_close and prev_close > 0:
@@ -98,7 +99,11 @@ def _fetch_snapshots() -> list[dict]:
             "ticker":         ticker,
             "price":          float(price),
             "volume":         int(volume),
-            "avg_volume_20d": int(avg_volume_20d),
+            # avg_volume_20d intentionally omitted — signal_engine reads the
+            # real 20-day average from the avg_volume table. Do not write a
+            # fabricated proxy here; it previously masked avg_volume_worker
+            # failures and was being compared against partial-day cumulative
+            # volume incorrectly.
             "pct_change":     pct_change,
             "ingested_at":    now,
         })

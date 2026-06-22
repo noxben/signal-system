@@ -23,6 +23,8 @@ import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
+from .market_clock import minutes_since_open
+from ..config.intraday_curve import expected_volume_fraction
 
 from sqlalchemy import text
 
@@ -238,14 +240,29 @@ def run() -> None:
         pct_change   = float(row["pct_change"])
         sector       = TICKER_SECTOR.get(ticker, "unknown")
 
-        # Signal A: volume spike is the entry condition for all further processing
-        if avg_vol <= 0 or (volume / avg_vol) < VOLUME_MULTIPLIER:
+		# Signal A: volume spike, time-of-day adjusted.
+        # avg_vol is a full-day average; comparing it directly against a
+        # partial-day cumulative volume mechanically climbs from ~0 to ~1
+        # across the session. Compare against expected-volume-by-now instead.
+        mins = minutes_since_open(row["ingested_at"])
+        if mins is None:
+            logger.debug("ticker=%s outside market hours — skipped", ticker)
             continue
-        # omitting and letting filters handle this
-        # if abs(pct_change) >= 2.0:
-            # continue 
 
-        logger.info("ticker=%s volume spike detected (%.1fx)", ticker, volume / avg_vol)
+        expected_fraction = expected_volume_fraction(mins)
+        expected_volume = avg_vol * expected_fraction
+
+        if avg_vol <= 0 or expected_volume <= 0:
+            continue
+
+        relative_volume = volume / expected_volume
+        if relative_volume < VOLUME_MULTIPLIER:
+            continue
+
+        logger.info(
+            "ticker=%s volume spike detected (%.2fx of time-adjusted expected, raw_vol=%d, expected_vol=%d, mins_since_open=%.0f)",
+            ticker, relative_volume, volume, int(expected_volume), mins,
+        )
 
         # Hard filters — §8
         passed, reject_reason = filters.apply(ticker, pct_change, avg_vol)
