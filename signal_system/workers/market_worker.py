@@ -49,7 +49,7 @@ def _fetch_snapshots() -> list[dict]:
         headers=_headers(),
         params={
             "symbols": ",".join(ALL_TICKERS),
-            "feed":    "iex",  # free tier — IEX feed
+            "feed":    "sip",  # free tier — IEX feed
         },
         timeout=15,
     )
