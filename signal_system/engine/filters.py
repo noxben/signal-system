@@ -67,7 +67,7 @@ def _earnings_soon(ticker: str) -> bool:
             count = db.execute(
                 text("""
                     SELECT COUNT(*) FROM news_items
-                    WHERE tagged_tickers @> to_jsonb(:ticker::text)
+                    WHERE tagged_tickers @> jsonb_build_array(:ticker)
                       AND category = 'earnings'
                       AND published_at BETWEEN :cutoff AND :end
                 """),
