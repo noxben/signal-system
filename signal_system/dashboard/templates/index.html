@@ -248,6 +248,70 @@
     .outcome-mfe  { color: var(--blue);  font-weight: 600; }
     .outcome-fail { color: var(--red);   font-weight: 600; }
     .outcome-null { color: var(--muted); }
+    
+    /* ── Decision tooltip ── */
+	.tooltip-anchor {
+	  position: relative;
+	  display: inline-flex;
+	  align-items: center;
+	  justify-content: center;
+	  width: 18px;
+	  height: 18px;
+	  border-radius: 50%;
+	  background: var(--border);
+	  color: var(--muted);
+	  font-size: 11px;
+	  font-weight: 700;
+	  cursor: default;
+	  margin-left: 8px;
+	  flex-shrink: 0;
+	}
+	
+	.tooltip-anchor:hover .tooltip-box {
+	  display: block;
+	}
+	
+	.tooltip-box {
+	  display: none;
+	  position: absolute;
+	  top: 26px;
+	  right: 0;
+	  z-index: 200;
+	  width: 280px;
+	  background: #1e2130;
+	  border: 1px solid var(--border);
+	  border-radius: 8px;
+	  padding: 12px 14px;
+	  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+	  font-size: 12px;
+	  line-height: 1.6;
+	  color: var(--text);
+	  pointer-events: none;
+	}
+	
+	.tooltip-box .hint-title {
+	  font-weight: 700;
+	  font-size: 12px;
+	  margin-bottom: 6px;
+	  color: var(--text);
+	}
+	
+	.tooltip-box .hint-body {
+	  color: var(--muted);
+	  margin-bottom: 8px;
+	}
+	
+	.tooltip-box .hint-action {
+	  font-size: 11px;
+	  font-weight: 600;
+	  padding: 4px 0;
+	  border-top: 1px solid var(--border);
+	  margin-top: 6px;
+	}
+	
+	.hint-action.positive { color: var(--green); }
+	.hint-action.cautious { color: var(--amber); }
+	.hint-action.warning  { color: var(--red); }
   </style>
 </head>
 <body>
@@ -346,6 +410,66 @@ async function refreshHealth() {
   }
 }
 
+function buildHint(signal) {
+	  const factors = signal.factors_json || {};
+	  const score   = signal.score;
+	  const trigger = signal.trigger_type;
+	  const hasNews       = factors.no_recent_news === false;
+	  const volRatio      = factors.volume_ratio || 0;
+	  const pctChange     = factors.pct_change   || 0;
+	  const absPct        = Math.abs(pctChange);
+	
+	  // Build summary line
+	  const summaryParts = [
+		`Score ${score}`,
+		trigger.replace(/_/g, " "),
+		hasNews ? "news detected" : "no recent news",
+		absPct > 0 ? `price ${pctChange > 0 ? "+" : ""}${pctChange.toFixed(1)}%` : null,
+	  ].filter(Boolean).join(" · ");
+	
+	  // Determine tone and action text
+	  let tone, body, action;
+	
+	  if (score >= 8 && !hasNews && absPct <= 2) {
+		tone   = "positive";
+		body   = "Strong setup — elevated volume with no news catalyst and modest price movement. Classic pre-news accumulation pattern.";
+		action = "→ Consider approving. Look for a flat base before the spike on the chart.";
+	  } else if (score >= 8 && hasNews) {
+		tone   = "cautious";
+		body   = "High score but news was detected in the last 4 hours. The move may already be explained.";
+		action = "→ Check the headline. If it's generic sector news, the signal may still be valid.";
+	  } else if (score >= 8 && absPct > 2) {
+		tone   = "cautious";
+		body   = "High score but price has already moved. Entry timing is tight.";
+		action = "→ Verify whether the move happened before or after the volume spike.";
+	  } else if (score >= 5 && score < 8 && !hasNews && absPct <= 2) {
+		tone   = "cautious";
+		body   = "Moderate setup. Fewer confirming factors than ideal but no obvious red flags.";
+		action = "→ Lower conviction. Only approve if chart pattern is clean.";
+	  } else if (absPct > 5) {
+		tone   = "warning";
+		body   = "Price has already moved significantly. The opportunity may have passed.";
+		action = "→ Consider rejecting: Already moved.";
+	  } else if (hasNews && absPct > 3) {
+		tone   = "warning";
+		body   = "News detected and price is up. This looks like a explained move, not pre-positioning.";
+		action = "→ Consider rejecting: Sector noise.";
+	  } else {
+		tone   = "cautious";
+		body   = "Mixed signals. Review the factor breakdown carefully.";
+		action = "→ Low conviction — reject unless you have strong external context.";
+	  }
+	
+	  return `
+		<span class="tooltip-anchor">?
+		  <div class="tooltip-box">
+			<div class="hint-title">${summaryParts}</div>
+			<div class="hint-body">${body}</div>
+			<div class="hint-action ${tone}">${action}</div>
+		  </div>
+		</span>`;
+	}
+
 // ── Signal queue ─────────────────────────────────────────────
 
 function buildFactorPills(factors) {
@@ -381,8 +505,8 @@ function buildCard(signal) {
       <span class="sector-tag">${signal.sector || "—"}</span>
       <span class="trigger-tag ${signal.trigger_type}">${signal.trigger_type.replace("_"," ")}</span>
       ${volRatio ? `<span class="factor on">${volRatio} vol</span>` : ""}
-      <span class="score-badge ${scoreColor(signal.score)}">${signal.score}</span>
-    </div>
+	  <span class="score-badge ${scoreColor(signal.score)}">${signal.score}</span>
+		  ${buildHint(signal)}    </div>
 
     <div class="factors">${buildFactorPills(factors)}</div>
 
