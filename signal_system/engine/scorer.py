@@ -26,6 +26,10 @@ SCORE_OPTIONS_PROXY  =  1
 PENALTY_EARNINGS     = -3
 PENALTY_LATE_ENTRY   = -2
 PENALTY_SMALL_CAP    = -1
+PENALTY_BELOW_50_SMA = -2  # price below 50-day SMA — trend is against the trade
+                           # POST-MVP NOTE: when shorting is added, this penalty
+                           # should flip to a positive for short signals.
+                           # Revisit after 60 signals logged with outcome data.
 
 PASS_THRESHOLD       = int(os.getenv("SCORE_PASS_THRESHOLD", 5))
 VOLUME_MULTIPLIER    = float(os.getenv("VOLUME_SPIKE_MULTIPLIER", 2.5))
@@ -57,12 +61,11 @@ def _sector_aligned(ticker: str, sector: str) -> bool:
     Signal B: 2+ tickers in same sector spiked within SECTOR_ALIGN_MINUTES
     AND a political event exists for that sector in last 24h. §6
     """
-    now    = datetime.now(timezone.utc)
-    cutoff_align   = now - timedelta(minutes=SECTOR_ALIGN_MINUTES)
+    now              = datetime.now(timezone.utc)
+    cutoff_align     = now - timedelta(minutes=SECTOR_ALIGN_MINUTES)
     cutoff_political = now - timedelta(hours=24)
 
     with get_db() as db:
-        # Other tickers in same sector with recent volume spikes
         spike_count = db.execute(
             text("""
                 SELECT COUNT(DISTINCT ticker) FROM signals
@@ -74,10 +77,9 @@ def _sector_aligned(ticker: str, sector: str) -> bool:
             {"sector": sector, "ticker": ticker, "cutoff": cutoff_align},
         ).scalar()
 
-        if spike_count < 1:  # need 1 other = 2 total including current
+        if spike_count < 1:
             return False
 
-        # Political event for sector in last 24h
         pol_count = db.execute(
             text("""
                 SELECT COUNT(*) FROM political_events
@@ -106,6 +108,22 @@ def _is_repeat_spike(ticker: str) -> bool:
     return count >= 2
 
 
+def _get_sma_50d(ticker: str) -> float | None:
+    """
+    Read the 50-day SMA from avg_volume table.
+    Computed daily by avg_volume_worker.
+    Returns None if not yet populated — penalty is skipped, not applied.
+    """
+    with get_db() as db:
+        row = db.execute(
+            text("SELECT sma_50d FROM avg_volume WHERE ticker = :ticker"),
+            {"ticker": ticker},
+        ).fetchone()
+    if row and row.sma_50d is not None:
+        return float(row.sma_50d)
+    return None
+
+
 def compute(
     ticker: str,
     sector: str,
@@ -114,33 +132,35 @@ def compute(
     pct_change: float,
     market_cap: int,
     earnings_soon: bool,
+    current_price: float,
 ) -> tuple[int, dict]:
     """
     Compute score and return (score, factors_json).
     factors_json records every factor value for calibration (§16).
+
+    current_price added to support the 50-day SMA trend filter.
+    Signal engine must pass this — it already has price from market_data.
     """
     factors = {}
     score   = 0
 
     # --- Positive factors ---
 
-	# Volume spike baseline, time-of-day adjusted — see market_clock.py /
-    # intraday_curve.py. Must match the same calculation signal_engine.py
-    # uses for its pre-filter, or a ticker can pass the engine's spike check
-    # and then get scored as "not a spike" here, or vice versa.
+    # Volume spike baseline, time-of-day adjusted
     now_utc = datetime.now(timezone.utc)
     mins = minutes_since_open(now_utc)
     if mins is not None and avg_volume_20d > 0:
         expected_fraction = expected_volume_fraction(mins)
-        expected_volume = avg_volume_20d * expected_fraction
-        volume_ratio = volume / expected_volume if expected_volume > 0 else 0
+        expected_volume   = avg_volume_20d * expected_fraction
+        volume_ratio      = volume / expected_volume if expected_volume > 0 else 0
     else:
         volume_ratio = 0
+
     is_spike = volume_ratio >= VOLUME_MULTIPLIER and abs(pct_change) < LATE_ENTRY_PCT
     if is_spike:
         score += SCORE_VOLUME_SPIKE
-    factors["volume_spike"]   = is_spike
-    factors["volume_ratio"]   = round(volume_ratio, 2)
+    factors["volume_spike"] = is_spike
+    factors["volume_ratio"] = round(volume_ratio, 2)
 
     # Sector alignment + political event
     aligned = _sector_aligned(ticker, sector)
@@ -159,26 +179,40 @@ def compute(
     repeat = _is_repeat_spike(ticker)
     if repeat:
         score += SCORE_REPEAT_SPIKE
-    factors["repeat_spike"]   = repeat
+    factors["repeat_spike"] = repeat
 
     # Options proxy — placeholder, implemented Week 4
-    factors["options_proxy"]  = False
+    factors["options_proxy"] = False
 
     # --- Penalties ---
 
     if earnings_soon:
         score += PENALTY_EARNINGS
-    factors["earnings_soon"]  = earnings_soon
+    factors["earnings_soon"] = earnings_soon
 
     if abs(pct_change) > LATE_ENTRY_PCT:
         score += PENALTY_LATE_ENTRY
-    factors["late_entry"]     = abs(pct_change) > LATE_ENTRY_PCT
+    factors["late_entry"] = abs(pct_change) > LATE_ENTRY_PCT
 
     if market_cap < MIN_MARKET_CAP:
         score += PENALTY_SMALL_CAP
-    factors["small_cap"]      = market_cap < MIN_MARKET_CAP
+    factors["small_cap"] = market_cap < MIN_MARKET_CAP
 
-    # Determine primary trigger type for signal record
+    # 50-day SMA trend filter
+    # If sma_50d is None (not yet computed), skip penalty — do not penalise
+    # a ticker just because the worker hasn't run yet.
+    sma_50d = _get_sma_50d(ticker)
+    if sma_50d is not None:
+        below_50_sma = current_price < sma_50d
+        if below_50_sma:
+            score += PENALTY_BELOW_50_SMA
+        factors["below_50_sma"] = below_50_sma
+        factors["sma_50d"]      = sma_50d
+    else:
+        factors["below_50_sma"] = None  # None = data not yet available
+        factors["sma_50d"]      = None
+
+    # Determine primary trigger type
     if no_news and is_spike:
         trigger_type = "pre_news"
     elif repeat:
@@ -188,8 +222,8 @@ def compute(
     else:
         trigger_type = "volume_spike"
 
-    factors["trigger_type"]   = trigger_type
-    factors["final_score"]    = score
+    factors["trigger_type"] = trigger_type
+    factors["final_score"]  = score
 
     return score, factors
 
@@ -200,10 +234,9 @@ def compute_score(factors: dict, source_statuses: dict) -> tuple[int, dict]:
     Testable interface: takes pre-built factors dict + source statuses.
     Returns (score, breakdown_dict).
     """
-    score = 0
-    breakdown = dict(factors)  # copy all factor values into breakdown
+    score     = 0
+    breakdown = dict(factors)
 
-    # Positive factors — zero out if source degraded (§5.1)
     vol_contrib = 2 if factors.get("volume_spike") else 0
     breakdown["volume_spike_contribution"] = vol_contrib
     score += vol_contrib
@@ -240,5 +273,7 @@ def compute_score(factors: dict, source_statuses: dict) -> tuple[int, dict]:
         score -= 2
     if factors.get("small_cap"):
         score -= 1
+    if factors.get("below_50_sma"):
+        score -= 2
 
     return score, breakdown

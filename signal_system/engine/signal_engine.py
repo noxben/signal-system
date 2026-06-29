@@ -87,16 +87,12 @@ def _refresh_market_caps() -> None:
     if not api_key:
         return
 
-    from ..config.watchlist import ALL_TICKERS
     try:
-        # Alpaca /v2/assets doesn't give market cap directly.
-        # Use a single snapshot call to get last price, then estimate
-        # from shares outstanding — not available on free tier.
-        # For MVP: use a static minimum check based on price * known float.
-        # Mark all watchlist tickers as passing market cap (they're all large cap).
-        # Hard filter for market cap < $2B won't trip on our 37 curated tickers.
+        # Alpaca /v2/assets doesn't give market cap on free tier.
+        # All 37 watchlist tickers are large-cap by design — assume $10B+.
+        # Real market cap check is handled by watchlist curation, not runtime API.
         for ticker in ALL_TICKERS:
-            _market_cap_cache[ticker] = 10_000_000_000  # assume $10B+ for watchlist
+            _market_cap_cache[ticker] = 10_000_000_000
     except Exception as e:
         logger.warning("market cap refresh failed: %s", e)
 
@@ -149,14 +145,14 @@ def _write_signal(
                      :sources_healthy_json, :data_quality, :status)
             """),
             {
-                "ticker":              ticker,
-                "sector":              TICKER_SECTOR.get(ticker),
-                "trigger_type":        trigger_type,
-                "score":               score,
-                "factors_json":        json.dumps(factors),
+                "ticker":               ticker,
+                "sector":               TICKER_SECTOR.get(ticker),
+                "trigger_type":         trigger_type,
+                "score":                score,
+                "factors_json":         json.dumps(factors),
                 "sources_healthy_json": json.dumps(sources),
-                "data_quality":        data_quality,
-                "status":              status,
+                "data_quality":         data_quality,
+                "status":               status,
             },
         )
 
@@ -178,11 +174,10 @@ def _should_suppress(
     hours_since = (now - last_signal_time).total_seconds() / 3600
 
     if hours_since >= COOLDOWN_HOURS:
-        return False  # outside cooldown window
+        return False
 
-    # Inside cooldown — check score jump exception
     if last_signal_score is not None and new_score >= last_signal_score + COOLDOWN_SCORE_DELTA:
-        return False  # score jumped enough to override
+        return False
 
     return True
 
@@ -234,23 +229,20 @@ def run() -> None:
             logger.debug("ticker=%s no fresh market data — skipped", ticker)
             continue
 
-        volume       = row["volume"]
-        # Prefer proper 20d avg from avg_volume table; fall back to market_data proxy
-        avg_vol      = _get_avg_volume(ticker) or row["avg_volume_20d"]
-        pct_change   = float(row["pct_change"])
-        sector       = TICKER_SECTOR.get(ticker, "unknown")
+        volume     = row["volume"]
+        avg_vol    = _get_avg_volume(ticker) or row["avg_volume_20d"]
+        pct_change = float(row["pct_change"])
+        price      = float(row["price"])   # needed for 50-day SMA trend filter
+        sector     = TICKER_SECTOR.get(ticker, "unknown")
 
-		# Signal A: volume spike, time-of-day adjusted.
-        # avg_vol is a full-day average; comparing it directly against a
-        # partial-day cumulative volume mechanically climbs from ~0 to ~1
-        # across the session. Compare against expected-volume-by-now instead.
+        # Signal A: volume spike, time-of-day adjusted.
         mins = minutes_since_open(row["ingested_at"])
         if mins is None:
             logger.debug("ticker=%s outside market hours — skipped", ticker)
             continue
 
         expected_fraction = expected_volume_fraction(mins)
-        expected_volume = avg_vol * expected_fraction
+        expected_volume   = avg_vol * expected_fraction
 
         if avg_vol <= 0 or expected_volume <= 0:
             continue
@@ -260,7 +252,8 @@ def run() -> None:
             continue
 
         logger.info(
-            "ticker=%s volume spike detected (%.2fx of time-adjusted expected, raw_vol=%d, expected_vol=%d, mins_since_open=%.0f)",
+            "ticker=%s volume spike detected (%.2fx of time-adjusted expected, "
+            "raw_vol=%d, expected_vol=%d, mins_since_open=%.0f)",
             ticker, relative_volume, volume, int(expected_volume), mins,
         )
 
@@ -268,7 +261,6 @@ def run() -> None:
         passed, reject_reason = filters.apply(ticker, pct_change, avg_vol)
         if not passed:
             logger.info("ticker=%s hard filter rejected: %s", ticker, reject_reason)
-            # Still write to DB for calibration — stored with low score
             _write_signal(
                 ticker=ticker,
                 trigger_type="volume_spike",
@@ -281,12 +273,12 @@ def run() -> None:
             continue
 
         # Gather inputs for scorer
-        market_cap   = _get_market_cap(ticker)
-        earns_soon   = filters.earnings_soon(ticker)
+        market_cap = _get_market_cap(ticker)
+        earns_soon = filters.earnings_soon(ticker)
 
         # Score — §7
-        # If news source is degraded, no_news factor zeroed per §5.1
-        effective_sources = dict(sources)
+        # current_price passed for 50-day SMA trend filter.
+        # If political/news source degraded, factor contributions zeroed below.
         score, factors = scorer.compute(
             ticker=ticker,
             sector=sector,
@@ -295,19 +287,20 @@ def run() -> None:
             pct_change=pct_change,
             market_cap=market_cap,
             earnings_soon=earns_soon,
+            current_price=price,
         )
 
         # If political source degraded, zero out sector_aligned contribution §5.1
         if sources.get("political") == "degraded" and factors.get("sector_aligned"):
             score -= scorer.SCORE_SECTOR_POLICY
-            factors["sector_aligned"] = False
+            factors["sector_aligned"]        = False
             factors["sector_aligned_zeroed"] = "political_source_degraded"
 
         # If news source degraded, zero out no_news contribution §5.1
         if sources.get("news") == "degraded" and factors.get("no_recent_news"):
             score -= scorer.SCORE_NO_NEWS
-            factors["no_recent_news"] = False
-            factors["no_news_zeroed"] = "news_source_degraded"
+            factors["no_recent_news"]  = False
+            factors["no_news_zeroed"]  = "news_source_degraded"
 
         trigger_type = factors.get("trigger_type", "volume_spike")
 

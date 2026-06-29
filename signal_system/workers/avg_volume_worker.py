@@ -1,14 +1,12 @@
 # signal_system/workers/avg_volume_worker.py
 """
 avg_volume_worker — runs once daily at market open (09:35 ET).
-
-Fetches 20 trading days of daily bars from Alpaca for all watchlist tickers.
-Computes true avg_volume_20d and stores in avg_volume table.
+Fetches 50 trading days of daily bars from Alpaca for all watchlist tickers.
+Computes avg_volume_20d and sma_50d (50-day simple moving average of close).
 Signal engine reads from here instead of using prev-day proxy.
-
 §4.1: avg_volume_20d is a hard filter input — accuracy matters.
+sma_50d used as trend filter in scorer — price below sma_50d = −2 penalty.
 """
-
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -21,6 +19,7 @@ from ..health import mark_success, mark_failure
 from ..config.watchlist import ALL_TICKERS
 
 logger = logging.getLogger(__name__)
+
 SOURCE = "market"
 
 ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY", "")
@@ -35,13 +34,13 @@ def _headers() -> dict:
     }
 
 
-def _fetch_avg_volumes() -> dict[str, int]:
+def _fetch_bars() -> dict[str, dict]:
     """
-    Fetch 25 calendar days of daily bars (gives ~20 trading days).
-    Returns {ticker: avg_volume_20d}.
+    Fetch 70 calendar days of daily bars (gives ~50 trading days).
+    Returns {ticker: {"avg_volume_20d": int, "sma_50d": float}}.
     """
     end   = datetime.now(timezone.utc).date()
-    start = end - timedelta(days=35)  # buffer for weekends/holidays
+    start = end - timedelta(days=70)  # buffer for weekends/holidays — need ~50 trading days
 
     url = f"{ALPACA_DATA_URL}/v2/stocks/bars"
     resp = requests.get(
@@ -53,7 +52,7 @@ def _fetch_avg_volumes() -> dict[str, int]:
             "start":     start.isoformat(),
             "end":       end.isoformat(),
             "feed":      "iex",
-            "limit":     1000,
+            "limit":     5000,
         },
         timeout=20,
     )
@@ -68,31 +67,62 @@ def _fetch_avg_volumes() -> dict[str, int]:
     for ticker, bars in bars_by_ticker.items():
         if not bars:
             continue
-        volumes = [b["v"] for b in bars[-20:]]  # last 20 trading days
-        if volumes:
-            result[ticker] = int(sum(volumes) / len(volumes))
+
+        # avg_volume_20d — last 20 trading days
+        volumes = [b["v"] for b in bars[-20:]]
+        avg_volume_20d = int(sum(volumes) / len(volumes)) if volumes else None
+
+        # sma_50d — simple moving average of close, last 50 trading days
+        closes = [b["c"] for b in bars[-50:]]
+        sma_50d = round(sum(closes) / len(closes), 4) if len(closes) >= 20 else None
+        # Note: require at least 20 bars for sma_50d to be meaningful.
+        # Fewer than 50 bars means the average is over a shorter window — still
+        # useful as a trend proxy but less reliable. Logged below.
+
+        if avg_volume_20d:
+            result[ticker] = {
+                "avg_volume_20d": avg_volume_20d,
+                "sma_50d":        sma_50d,
+            }
+
+        if sma_50d is None:
+            logger.warning(
+                "ticker=%s insufficient bars for sma_50d (%d bars available)",
+                ticker, len(bars),
+            )
+        elif len(closes) < 50:
+            logger.warning(
+                "ticker=%s sma_50d computed from %d bars (fewer than 50) — treat as approximate",
+                ticker, len(closes),
+            )
 
     logger.info("avg_volume_worker computed avg for %d tickers", len(result))
     return result
 
 
-def _write_to_db(avgs: dict[str, int]) -> None:
+def _write_to_db(data: dict[str, dict]) -> None:
     now = datetime.now(timezone.utc)
     with get_db() as db:
-        for ticker, avg_vol in avgs.items():
+        for ticker, vals in data.items():
             db.execute(
                 text("""
                     INSERT INTO avg_volume
-                        (ticker, avg_volume_20d, computed_at)
+                        (ticker, avg_volume_20d, sma_50d, computed_at)
                     VALUES
-                        (:ticker, :avg_vol, :now)
+                        (:ticker, :avg_vol, :sma_50d, :now)
                     ON CONFLICT (ticker) DO UPDATE SET
                         avg_volume_20d = EXCLUDED.avg_volume_20d,
+                        sma_50d        = EXCLUDED.sma_50d,
                         computed_at    = EXCLUDED.computed_at
                 """),
-                {"ticker": ticker, "avg_vol": avg_vol, "now": now},
+                {
+                    "ticker":  ticker,
+                    "avg_vol": vals["avg_volume_20d"],
+                    "sma_50d": vals["sma_50d"],
+                    "now":     now,
+                },
             )
-    logger.info("avg_volume_worker wrote %d rows", len(avgs))
+    logger.info("avg_volume_worker wrote %d rows", len(data))
 
 
 def run() -> None:
@@ -103,9 +133,9 @@ def run() -> None:
         return
 
     try:
-        avgs = _fetch_avg_volumes()
-        if avgs:
-            _write_to_db(avgs)
+        data = _fetch_bars()
+        if data:
+            _write_to_db(data)
             logger.info("avg_volume_worker completed successfully")
         else:
             logger.warning("avg_volume_worker — no data returned")

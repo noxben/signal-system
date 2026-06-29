@@ -482,13 +482,14 @@ function buildFactorPills(factors) {
     ["earnings_soon",  "Earnings ⚠"],
     ["late_entry",     "Late entry"],
     ["small_cap",      "Small cap"],
+    ["below_50_sma",   "Below 50 SMA"],
   ];
   return show.map(([key, label]) => {
     const val = factors[key];
     if (val === undefined) return "";
     // Penalties shown as "off" (bad), positives as "on" (good)
-    const isPenalty = ["earnings_soon","late_entry","small_cap"].includes(key);
-    const cls = val ? (isPenalty ? "off" : "on") : "";
+	const isPenalty = ["earnings_soon","late_entry","small_cap","below_50_sma"].includes(key);    
+	const cls = val ? (isPenalty ? "off" : "on") : "";
     return `<span class="factor ${cls}">${label}</span>`;
   }).join("");
 }
