@@ -353,4 +353,4 @@ def run() -> None:
 
         # No fresh data for this ticker — skip, do not treat as zero §5
         if not row:
-		logger.debug("ticker=%s no fresh market data — skipped", ticker)
+        logger.debug("ticker=%s no fresh market data — skipped", ticker)
