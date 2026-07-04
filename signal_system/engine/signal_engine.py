@@ -188,11 +188,14 @@ def _get_avg_volume(ticker: str) -> int:
     try:
         with get_db() as db:
             row = db.execute(
-                text("SELECT avg_volume_20d FROM avg_volume WHERE ticker = :t"),
+                text("SELECT avg_volume_20d FROM avg_volume WHERE ticker = :t ORDER BY computed_at DESC LIMIT 1"),
                 {"t": ticker},
             ).fetchone()
-        return int(row.avg_volume_20d) if row else 0
-    except Exception:
+        if row and row.avg_volume_20d:
+            return int(row.avg_volume_20d)
+        return 0
+    except Exception as e:
+        logger.error("_get_avg_volume failed ticker=%s error=%s", ticker, e)
         return 0
 
 
@@ -208,11 +211,15 @@ def _process_ticker(ticker: str, row: dict, sources: dict) -> bool:
     the entire engine run. The exception is logged with the ticker name for
     debugging, and the run continues to the next ticker.
     """
-    volume     = row["volume"]
-    avg_vol    = _get_avg_volume(ticker) or row["avg_volume_20d"]
+	volume     = row["volume"]
     pct_change = float(row["pct_change"])
     price      = float(row["price"])
     sector     = TICKER_SECTOR.get(ticker, "unknown")
+
+    avg_vol = _get_avg_volume(ticker)
+    if avg_vol <= 0:
+        logger.warning("ticker=%s avg_vol unavailable — skipped", ticker)
+        return False
 
     # Signal A: volume spike, time-of-day adjusted.
     mins = minutes_since_open(row["ingested_at"])
@@ -223,7 +230,7 @@ def _process_ticker(ticker: str, row: dict, sources: dict) -> bool:
     expected_fraction = expected_volume_fraction(mins)
     expected_volume   = avg_vol * expected_fraction
 
-    if avg_vol <= 0 or expected_volume <= 0:
+    if expected_volume <= 0:
         return False
 
     relative_volume = volume / expected_volume
