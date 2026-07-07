@@ -211,7 +211,7 @@ def _process_ticker(ticker: str, row: dict, sources: dict) -> bool:
     the entire engine run. The exception is logged with the ticker name for
     debugging, and the run continues to the next ticker.
     """
-	volume     = row["volume"]
+	volume = row["volume"]
     pct_change = float(row["pct_change"])
     price      = float(row["price"])
     sector     = TICKER_SECTOR.get(ticker, "unknown")
