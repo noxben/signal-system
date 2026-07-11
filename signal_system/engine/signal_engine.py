@@ -217,10 +217,10 @@ def _process_ticker(ticker: str, row: dict, sources: dict) -> bool:
     sector     = TICKER_SECTOR.get(ticker, "unknown")
 
     avg_vol = _get_avg_volume(ticker)
-	logger.info("ticker=%s avg_vol=%s", ticker, avg_vol)
-	if avg_vol <= 0:
-		logger.warning("ticker=%s avg_vol unavailable — skipped", ticker)
-		return False
+    logger.info("ticker=%s avg_vol=%s", ticker, avg_vol)
+    if avg_vol <= 0:
+        logger.warning("ticker=%s avg_vol unavailable — skipped", ticker)
+        return False
 
     # Signal A: volume spike, time-of-day adjusted.
     mins = minutes_since_open(row["ingested_at"])
