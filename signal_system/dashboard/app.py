@@ -38,6 +38,15 @@ def create_app() -> Flask:
         return jsonify(sources)
 
     # ----------------------------------------------------------------
+    # Lightweight keep-alive endpoint — no DB dependency.
+    # Used by external cron pinger (cron-job.org) to prevent Railway
+    # free-tier container sleep during market hours.
+    # ----------------------------------------------------------------
+    @app.route("/ping")
+    def ping():
+        return jsonify({"status": "awake"}), 200
+
+    # ----------------------------------------------------------------
     # Signal queue — §10.1
     # Returns pending signals (approved IS NULL, status = 'pending')
     # ordered by score desc, then time desc
