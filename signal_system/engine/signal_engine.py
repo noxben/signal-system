@@ -335,6 +335,13 @@ def run() -> None:
     Main signal engine loop.
     Called every 5 minutes by scheduler during market hours.
     """
+    from sqlalchemy import text
+    from ..db import get_db
+    with get_db() as db:
+        db.execute(
+            text("INSERT INTO signal_engine_heartbeat (ran_at) VALUES (NOW())")
+        )
+    
     logger.info("signal_engine starting run")
 
     # Refresh market cap cache once per run
