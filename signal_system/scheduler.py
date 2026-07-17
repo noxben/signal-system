@@ -1,6 +1,6 @@
 # signal_system/scheduler.py
 """
-Entry point — runs the APScheduler and Flask dashboard in the same process.
+Entry  point — runs the APScheduler and Flask dashboard in the same process.
 Flask runs in a background thread; APScheduler runs on the main thread.
 
 Start:
