@@ -1,7 +1,7 @@
 # signal_system/engine/signal_engine.py
 """
 Signal engine — §6, §7, §8, §9.
-Runs every 5 minutes via scheduler.
+Runs every 5 minutes via  scheduler.
 
 Flow per ticker:
   1. Read latest market snapshot from DB
