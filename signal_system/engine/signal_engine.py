@@ -350,18 +350,43 @@ def run() -> None:
     # Snapshot source health once for this run — shared across all tickers
     sources = get_source_statuses()
 
+    with get_db() as db:
+    db.execute(
+        text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES (:cp, :d)"),
+        {"cp": "sources_checked", "d": str(sources)},
+    )
+
     # If market data source itself is degraded, abort — nothing to process
     if sources.get("market") == "degraded":
         logger.warning("signal_engine aborted — market source degraded")
         return
 
+    if sources.get("market") == "degraded":
+        with get_db() as db:
+            db.execute(
+                text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('aborted_market_degraded', :d)"),
+                {"d": str(sources)},
+            )
+        return
+
     market = _latest_market_data()
+
+    with get_db() as db:
+        db.execute(
+            text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES (:cp, :d)"),
+            {"cp": "market_fetched", "d": f"count={len(market)}"},
+        )
+    
+    if not market:
+        with get_db() as db:
+            db.execute(
+                text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('aborted_no_market', NULL)"),
+            )
+        return
 
     if not market:
         logger.warning("signal_engine — no fresh market data, skipping run")
-        return
-
-    signals_written = 0
+        return  signals_written = 0
     tickers_failed   = []
 
     for ticker in ALL_TICKERS:
