@@ -335,38 +335,60 @@ def run() -> None:
     Main signal engine loop.
     Called every 5 minutes by scheduler during market hours.
     """
-    from sqlalchemy import text
-    from ..db import get_db
     with get_db() as db:
         db.execute(
             text("INSERT INTO signal_engine_heartbeat (ran_at) VALUES (NOW())")
         )
-    
+
     logger.info("signal_engine starting run")
 
     # Refresh market cap cache once per run
     _refresh_market_caps()
 
+    with get_db() as db:
+        db.execute(
+            text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('after_refresh_caps', NULL)")
+        )
+
     # Snapshot source health once for this run — shared across all tickers
     sources = get_source_statuses()
 
     with get_db() as db:
-    db.execute(
-        text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES (:cp, :d)"),
-        {"cp": "sources_checked", "d": str(sources)},
-    )
+        db.execute(
+            text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES (:cp, :d)"),
+            {"cp": "sources_checked", "d": str(sources)},
+        )
 
     # If market data source itself is degraded, abort — nothing to process
-    if sources.get("market") == "degraded":
-        logger.warning("signal_engine aborted — market source degraded")
-        return
-
     if sources.get("market") == "degraded":
         with get_db() as db:
             db.execute(
                 text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('aborted_market_degraded', :d)"),
                 {"d": str(sources)},
             )
+        logger.warning("signal_engine aborted — market source degraded")
+        return
+
+    market = _latest_market_data()
+
+    with get_db() as db:
+        db.execute(
+            text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES (:cp, :d)"),
+            {"cp": "market_fetched", "d": f"count={len(market)}"},
+        )
+
+    if not market:
+        with get_db() as db:
+            db.execute(
+                text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('aborted_no_market', NULL)")
+            )
+        logger.warning("signal_engine — no fresh market data, skipping run")
+        return
+
+    with get_db() as db:
+        db.execute(
+            text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('entering_ticker_loop', NULL)")
+        )
         return
 
     market = _latest_market_data()
