@@ -400,19 +400,13 @@ def run() -> None:
         )
     
     if not market:
-        with get_db() as db:
-            db.execute(
-                text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('aborted_no_market', NULL)"),
-            )
-        return
-
-    if not market:
-        logger.warning("signal_engine — no fresh market data, skipping run")
-        return  signals_written = 0
-    tickers_failed   = []
-
-    for ticker in ALL_TICKERS:
-        row = market.get(ticker)
+            with get_db() as db:
+                db.execute(
+                    text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('aborted_no_market', NULL)"),
+                )
+            return
+        tickers_failed = []
+        for ticker in ALL_TICKERS:        row = market.get(ticker)
 
         # No fresh data for this ticker — skip, do not treat as zero §5
         if not row:
