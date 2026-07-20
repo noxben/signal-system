@@ -339,12 +339,10 @@ def run() -> None:
         db.execute(
             text("INSERT INTO signal_engine_heartbeat (ran_at) VALUES (NOW())")
         )
-
     logger.info("signal_engine starting run")
 
     # Refresh market cap cache once per run
     _refresh_market_caps()
-
     with get_db() as db:
         db.execute(
             text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('after_refresh_caps', NULL)")
@@ -352,7 +350,6 @@ def run() -> None:
 
     # Snapshot source health once for this run — shared across all tickers
     sources = get_source_statuses()
-
     with get_db() as db:
         db.execute(
             text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES (:cp, :d)"),
@@ -370,7 +367,6 @@ def run() -> None:
         return
 
     market = _latest_market_data()
-
     with get_db() as db:
         db.execute(
             text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES (:cp, :d)"),
@@ -389,25 +385,24 @@ def run() -> None:
         db.execute(
             text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('entering_ticker_loop', NULL)")
         )
-        return
 
-    market = _latest_market_data()
-
-    with get_db() as db:
-        db.execute(
-            text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES (:cp, :d)"),
-            {"cp": "market_fetched", "d": f"count={len(market)}"},
-        )
-    
-    if not market:
-            with get_db() as db:
-                db.execute(
-                    text("INSERT INTO signal_engine_debug (checkpoint, detail) VALUES ('aborted_no_market', NULL)"),
-                )
-            return
-        tickers_failed = []
-        for ticker in ALL_TICKERS:        row = market.get(ticker)
-
+    signals_written = 0
+    tickers_failed = []
+    for ticker in ALL_TICKERS:
+        row = market.get(ticker)
         # No fresh data for this ticker — skip, do not treat as zero §5
         if not row:
             logger.debug("ticker=%s no fresh market data — skipped", ticker)
+            continue
+        try:
+            wrote = _process_ticker(ticker, row, sources)
+            if wrote:
+                signals_written += 1
+        except Exception as e:
+            logger.error("ticker=%s processing failed: %s", ticker, e)
+            tickers_failed.append(ticker)
+
+    logger.info(
+        "signal_engine run complete — signals_written=%d tickers_failed=%s",
+        signals_written, tickers_failed,
+    )
